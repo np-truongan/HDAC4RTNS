@@ -1,0 +1,218 @@
+#include "pipeline.h"
+#include "heuristics.h"
+#include "strategies.h"
+
+#include <queue>
+#include <thread>
+#include <mutex>
+#include <condition_variable>
+#include <chrono>
+#include <numeric>
+#include <cmath>
+#include <fstream>
+#include <iostream>
+#include <iomanip>
+#include <stdexcept>
+
+// ============================================================
+//  Internal implementation (Pimpl idiom keeps the header clean)
+// ============================================================
+struct Pipeline::Impl {
+    EngineConfig              cfg;
+    std::queue<StreamItem>    queue;
+    std::mutex                queueMutex;
+    std::condition_variable   cv;
+    bool                      done = false;
+    std::thread               consumerThread;
+    std::vector<ChunkResult>  results;
+
+    explicit Impl(EngineConfig c) : cfg(c) {}
+
+    // --------------------------------------------------------
+    //  Apply preprocessing + compression and return the result.
+    //  This is the only place in the entire codebase where real
+    //  compressors are called — no mocks, no stubs.
+    // --------------------------------------------------------
+    ChunkResult processChunk(const StreamItem& item) {
+        ChunkResult result;
+        result.originalSize  = item.data.size();
+        result.workloadType  = item.workloadType;
+        result.features      = extractFeatures(item.data);
+        result.decision      = decide(result.features, cfg);
+
+        auto t0 = std::chrono::high_resolution_clock::now();
+
+        // -- Preprocessing --
+        Chunk processed = item.data;
+
+        if (result.decision.preprocess == Preprocess::DELTA) {
+            processed = deltaEncode(processed);
+        } else if (result.decision.preprocess == Preprocess::BITPACK) {
+            // Bit-packing only valid when values fit in [0,15].
+            // Check the invariant; fall back to no preprocessing if violated.
+            bool eligible = true;
+            for (Byte b : processed) {
+                if (b > 15) { eligible = false; break; }
+            }
+            if (eligible)
+                processed = bitPackEncode(processed);
+            else
+                result.decision.preprocess = Preprocess::NONE;
+        }
+
+        // -- Compression --
+        Chunk compressed;
+        switch (result.decision.algorithm) {
+            case Algorithm::LZ4:  compressed = compressLZ4(processed);  break;
+            case Algorithm::ZSTD: compressed = compressZSTD(processed); break;
+            case Algorithm::GZIP: compressed = compressGZIP(processed); break;
+        }
+
+        auto t1 = std::chrono::high_resolution_clock::now();
+
+        if (compressed.empty())
+            throw std::runtime_error("Compression failed for chunk");
+
+        result.compressedSize  = compressed.size();
+        result.compressionRatio =
+            static_cast<double>(compressed.size()) /
+            static_cast<double>(item.data.size());
+        result.latencyMs =
+            std::chrono::duration<double, std::milli>(t1 - t0).count();
+
+        return result;
+    }
+
+    void consumerLoop() {
+        while (true) {
+            std::unique_lock<std::mutex> lock(queueMutex);
+            cv.wait(lock, [this] {
+                return !queue.empty() || done;
+            });
+
+            if (queue.empty() && done) break;
+
+            StreamItem item = std::move(queue.front());
+            queue.pop();
+            lock.unlock();
+
+            results.push_back(processChunk(item));
+        }
+    }
+};
+
+// ============================================================
+//  Pipeline public interface
+// ============================================================
+Pipeline::Pipeline(EngineConfig cfg) : impl(new Impl(cfg)) {}
+Pipeline::~Pipeline() { delete impl; }
+
+void Pipeline::start() {
+    impl->consumerThread =
+        std::thread(&Impl::consumerLoop, impl);
+}
+
+void Pipeline::push(StreamItem item) {
+    {
+        std::lock_guard<std::mutex> lock(impl->queueMutex);
+        impl->queue.push(std::move(item));
+    }
+    impl->cv.notify_one();
+}
+
+void Pipeline::finish() {
+    {
+        std::lock_guard<std::mutex> lock(impl->queueMutex);
+        impl->done = true;
+    }
+    impl->cv.notify_all();
+    if (impl->consumerThread.joinable())
+        impl->consumerThread.join();
+}
+
+const std::vector<ChunkResult>& Pipeline::getResults() const {
+    return impl->results;
+}
+
+RunMetrics Pipeline::computeMetrics(const std::string& systemName) const {
+    return aggregateResults(impl->results, systemName);
+}
+
+// ============================================================
+//  Metrics helpers
+// ============================================================
+RunMetrics aggregateResults(
+    const std::vector<ChunkResult>& results,
+    const std::string& systemName)
+{
+    if (results.empty()) return {};
+
+    RunMetrics m;
+    m.systemName = systemName;
+
+    double sumRatio = 0, sumLatency = 0, sumThroughput = 0;
+    double totalOriginal = 0, totalCompressed = 0;
+
+    for (const auto& r : results) {
+        sumRatio     += r.compressionRatio;
+        sumLatency   += r.latencyMs;
+        totalOriginal   += r.originalSize;
+        totalCompressed += r.compressedSize;
+
+        double throughput =
+            (r.originalSize / (1024.0 * 1024.0)) /
+            (r.latencyMs / 1000.0);
+        sumThroughput += throughput;
+    }
+
+    size_t n = results.size();
+    m.avgCompressionRatio = sumRatio / n;
+    m.avgLatencyMs        = sumLatency / n;
+    m.avgThroughputMBps   = sumThroughput / n;
+    m.totalOriginalMB     = totalOriginal / (1024.0 * 1024.0);
+    m.totalCompressedMB   = totalCompressed / (1024.0 * 1024.0);
+
+    // Jitter = std-dev of latencies
+    double variance = 0;
+    for (const auto& r : results)
+        variance += std::pow(r.latencyMs - m.avgLatencyMs, 2);
+    m.jitterMs = std::sqrt(variance / n);
+
+    return m;
+}
+
+void printRunMetrics(const RunMetrics& m) {
+    std::cout << std::fixed << std::setprecision(4);
+    std::cout << "System            : " << m.systemName        << "\n";
+    std::cout << "Avg Ratio         : " << m.avgCompressionRatio << "\n";
+    std::cout << "Avg Latency (ms)  : " << m.avgLatencyMs       << "\n";
+    std::cout << "Jitter (ms)       : " << m.jitterMs           << "\n";
+    std::cout << "Avg Throughput    : " << m.avgThroughputMBps  << " MB/s\n";
+    std::cout << "Total Original    : " << m.totalOriginalMB    << " MB\n";
+    std::cout << "Total Compressed  : " << m.totalCompressedMB  << " MB\n";
+}
+
+void saveResultsCSV(
+    const std::vector<ChunkResult>& results,
+    const std::string& filepath)
+{
+    std::ofstream f(filepath);
+    if (!f.is_open())
+        throw std::runtime_error("Cannot open CSV file: " + filepath);
+
+    f << "workload,original_bytes,compressed_bytes,"
+         "compression_ratio,latency_ms,"
+         "entropy,smoothness,algorithm,preprocess\n";
+
+    for (const auto& r : results) {
+        f << r.workloadType          << ","
+          << r.originalSize          << ","
+          << r.compressedSize        << ","
+          << r.compressionRatio      << ","
+          << r.latencyMs             << ","
+          << r.features.entropy      << ","
+          << r.features.smoothness   << ","
+          << toString(r.decision.algorithm)  << ","
+          << toString(r.decision.preprocess) << "\n";
+    }
+}
