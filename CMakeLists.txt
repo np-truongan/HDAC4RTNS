@@ -48,6 +48,15 @@ add_executable(benchmark_baseline benchmarks/baseline.cpp)
 target_link_libraries(benchmark_baseline PRIVATE adaptive_core)
 
 # ---------------------------------------------------------------
+#  Week 2: First adaptive benchmark + correctness tests
+# ---------------------------------------------------------------
+add_executable(benchmark_adaptive_week2 benchmarks/adaptive_week2.cpp)
+target_link_libraries(benchmark_adaptive_week2 PRIVATE adaptive_core)
+
+add_executable(test_roundtrip tests/test_roundtrip.cpp)
+target_link_libraries(test_roundtrip PRIVATE adaptive_core)
+
+# ---------------------------------------------------------------
 #  Placeholder targets for subsequent weeks
 #  (uncomment as files are added)
 # ---------------------------------------------------------------
