@@ -1,7 +1,6 @@
 # Heuristic-Driven Adaptive Compression for Real-Time Network Streams
 
 **Author:** Nguyen Pham Truong An — 23BI14004  
-**Thesis Project** | 8-Week Development Timeline
 
 ---
 

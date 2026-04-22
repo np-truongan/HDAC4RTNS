@@ -57,12 +57,15 @@ add_executable(test_roundtrip tests/test_roundtrip.cpp)
 target_link_libraries(test_roundtrip PRIVATE adaptive_core)
 
 # ---------------------------------------------------------------
+#  Week 3: Multi-dataset adaptive engine evaluation
+# ---------------------------------------------------------------
+add_executable(benchmark_adaptive_week3 benchmarks/adaptive_week3.cpp)
+target_link_libraries(benchmark_adaptive_week3 PRIVATE adaptive_core)
+
+# ---------------------------------------------------------------
 #  Placeholder targets for subsequent weeks
 #  (uncomment as files are added)
 # ---------------------------------------------------------------
-# add_executable(benchmark_adaptive   benchmarks/adaptive.cpp)
-# target_link_libraries(benchmark_adaptive   PRIVATE adaptive_core)
-
 # add_executable(benchmark_sensitivity benchmarks/sensitivity.cpp)
 # target_link_libraries(benchmark_sensitivity PRIVATE adaptive_core)
 
