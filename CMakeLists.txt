@@ -63,6 +63,12 @@ add_executable(benchmark_adaptive_week3 benchmarks/adaptive_week3.cpp)
 target_link_libraries(benchmark_adaptive_week3 PRIVATE adaptive_core)
 
 # ---------------------------------------------------------------
+#  Week 4: Streaming pipeline integration benchmark
+# ---------------------------------------------------------------
+add_executable(benchmark_adaptive_week4 benchmarks/adaptive_week4.cpp)
+target_link_libraries(benchmark_adaptive_week4 PRIVATE adaptive_core)
+
+# ---------------------------------------------------------------
 #  Placeholder targets for subsequent weeks
 #  (uncomment as files are added)
 # ---------------------------------------------------------------
