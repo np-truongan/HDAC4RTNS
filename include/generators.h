@@ -21,3 +21,8 @@ Chunk generateJSON(size_t size);
 // High entropy (~7.9 bits), near-uniform byte distribution.
 // Models binary log data or encrypted payloads.
 Chunk generateBinary(size_t size, unsigned seed = 123);
+
+// Low entropy (~2–3 bits), all values in [0, 15].
+// Models 4-bit sensor readings or quantized telemetry.
+// This is the canonical input for bit-packing preprocessing.
+Chunk generateNibble(size_t size, unsigned seed = 77);

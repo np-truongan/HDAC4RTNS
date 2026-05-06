@@ -57,3 +57,14 @@ Chunk generateBinary(size_t size, unsigned seed) {
 
     return data;
 }
+
+Chunk generateNibble(size_t size, unsigned seed) {
+    Chunk data(size);
+    std::mt19937 rng(seed);
+    std::uniform_int_distribution<int> dist(0, 15);
+
+    for (auto& b : data)
+        b = static_cast<Byte>(dist(rng));
+
+    return data;
+}

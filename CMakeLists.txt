@@ -82,3 +82,9 @@ add_custom_target(make_results_dir ALL
     COMMAND ${CMAKE_COMMAND} -E make_directory
     ${CMAKE_BINARY_DIR}/results
 )
+
+# ---------------------------------------------------------------
+#  Week 5: BitPack + preprocessing-aware pipeline
+# ---------------------------------------------------------------
+add_executable(benchmark_adaptive_week5 benchmarks/adaptive_week5.cpp)
+target_link_libraries(benchmark_adaptive_week5 PRIVATE adaptive_core)

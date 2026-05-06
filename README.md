@@ -70,21 +70,6 @@ adaptive_compression/
 
 ---
 
-## Weekly Development Progress
-
-| Week | Deliverable | Status |
-|------|-------------|--------|
-| 1 | Baseline benchmarking infrastructure — real LZ4/Zstd/Gzip across 3 datasets × 4 chunk sizes | ✅ |
-| 2 | Heuristic probes integrated into adaptive pipeline; first adaptive benchmark on structured data; round-trip correctness tests | ✅ |
-| 3 | Formal decision engine with calibrated thresholds; delta encoding verified with round-trip test | 🔲 |
-| 4 | Pipeline integration; chunk-based streaming with real compressors end-to-end | 🔲 |
-| 5 | Bit-packing preprocessing; preprocessing-aware decision logic | 🔲 |
-| 6 | Async producer-consumer pipeline; heterogeneous workloads; latency/jitter measurement | 🔲 |
-| 7 | Full comparative benchmarking vs static baselines; sensitivity analysis | 🔲 |
-| 8 | Thesis documentation | 🔲 |
-
----
-
 ## Dependencies
 
 | Library | Purpose |
