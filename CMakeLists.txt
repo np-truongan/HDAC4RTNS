@@ -88,3 +88,9 @@ add_custom_target(make_results_dir ALL
 # ---------------------------------------------------------------
 add_executable(benchmark_adaptive_week5 benchmarks/adaptive_week5.cpp)
 target_link_libraries(benchmark_adaptive_week5 PRIVATE adaptive_core)
+
+# ---------------------------------------------------------------
+#  Week 6: Continuous streaming evaluation
+# ---------------------------------------------------------------
+add_executable(benchmark_adaptive_week6 benchmarks/adaptive_week6.cpp)
+target_link_libraries(benchmark_adaptive_week6 PRIVATE adaptive_core)
