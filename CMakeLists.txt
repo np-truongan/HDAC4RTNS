@@ -94,3 +94,12 @@ target_link_libraries(benchmark_adaptive_week5 PRIVATE adaptive_core)
 # ---------------------------------------------------------------
 add_executable(benchmark_adaptive_week6 benchmarks/adaptive_week6.cpp)
 target_link_libraries(benchmark_adaptive_week6 PRIVATE adaptive_core)
+
+# ---------------------------------------------------------------
+#  Week 7: Comparative benchmark + sensitivity analysis
+# ---------------------------------------------------------------
+add_executable(benchmark_week7     benchmarks/benchmark_week7.cpp)
+target_link_libraries(benchmark_week7     PRIVATE adaptive_core)
+
+add_executable(benchmark_sensitivity benchmarks/benchmark_sensitivity.cpp)
+target_link_libraries(benchmark_sensitivity PRIVATE adaptive_core)
