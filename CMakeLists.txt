@@ -101,3 +101,9 @@ target_link_libraries(benchmark_sensitivity PRIVATE adaptive_core)
 # ---------------------------------------------------------------
 add_executable(network_benchmark benchmarks/network_benchmark.cpp)
 target_link_libraries(network_benchmark PRIVATE adaptive_core)
+
+# ---------------------------------------------------------------
+#  Chunk size sweep benchmark
+# ---------------------------------------------------------------
+add_executable(benchmark_chunksize benchmarks/benchmark_chunksize.cpp)
+target_link_libraries(benchmark_chunksize PRIVATE adaptive_core)
