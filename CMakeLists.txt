@@ -153,19 +153,8 @@ add_executable(benchmark_pareto benchmarks/benchmark_pareto.cpp)
 target_link_libraries(benchmark_pareto PRIVATE adaptive_core)
 
 # ---------------------------------------------------------------
-#  Network benchmark (Linux / WSL2 only — requires POSIX sockets
-#  and tc netem for network condition simulation)
-#
-#  Run via: sudo ../scripts/run_network_benchmark.sh
-#  Measures end-to-end latency under three standardised network
-#  conditions with 30 trials and 95% confidence intervals.
-# ---------------------------------------------------------------
-add_executable(network_benchmark benchmarks/network_benchmark.cpp)
-target_link_libraries(network_benchmark PRIVATE adaptive_core)
-
-# ---------------------------------------------------------------
 #  Ablation study benchmark
-#  Compares all preprocessing × algorithm combinations with
+#  Compares all preprocessing x algorithm combinations with
 #  30-trial confidence intervals on Telemetry and Nibble data.
 # ---------------------------------------------------------------
 add_executable(benchmark_ablation benchmarks/benchmark_ablation.cpp)
@@ -180,12 +169,50 @@ target_link_libraries(benchmark_ablation PRIVATE adaptive_core)
 add_executable(benchmark_boundary benchmarks/benchmark_boundary.cpp)
 target_link_libraries(benchmark_boundary PRIVATE adaptive_core)
 
+# ---------------------------------------------------------------
+#  Network benchmarks — POSIX only (Linux, WSL2, macOS)
+#
+#  network_benchmark : loopback TCP with tc netem simulation.
+#                      Run via: sudo ../scripts/run_network_benchmark.sh
+#
+#  network_sender    : two-machine sender — run on your laptop.
+#                      Usage: ./network_sender <receiver_ip> [scenario]
+#
+#  network_receiver  : two-machine receiver — run on Pi or remote machine.
+#                      Usage: ./network_receiver [port]
+#
+#  All three require POSIX sockets. Native Windows is not supported;
+#  use WSL2 instead. tc netem is Linux-only; macOS users see
+#  network_sender.cpp comments for dnctl/pfctl alternatives.
+# ---------------------------------------------------------------
+if(NOT WIN32)
+    add_executable(network_benchmark benchmarks/network_benchmark.cpp)
+    target_link_libraries(network_benchmark PRIVATE adaptive_core)
+
+    add_executable(network_sender benchmarks/network_sender.cpp)
+    target_link_libraries(network_sender PRIVATE adaptive_core)
+
+    add_executable(network_receiver benchmarks/network_receiver.cpp)
+    target_link_libraries(network_receiver PRIVATE adaptive_core)
+
+    foreach(target network_benchmark network_sender network_receiver)
+        add_dependencies(${target} make_results_dir)
+    endforeach()
+else()
+    message(STATUS
+        "Skipping network_benchmark, network_sender, network_receiver "
+        "— POSIX sockets not available on native Windows. Use WSL2.")
+endif()
+
+# ---------------------------------------------------------------
+#  Add results/ dependency to all non-network targets
+# ---------------------------------------------------------------
 foreach(target
     test_roundtrip
     benchmark_baseline benchmark_heuristic_single benchmark_routing_validation
     benchmark_pipeline_integration benchmark_preprocessing
     benchmark_streaming_stability benchmark_comparison benchmark_sensitivity
-    benchmark_chunksize benchmark_pareto network_benchmark
+    benchmark_chunksize benchmark_pareto
     benchmark_ablation benchmark_boundary)
     add_dependencies(${target} make_results_dir)
 endforeach()
