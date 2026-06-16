@@ -1,16 +1,9 @@
-// benchmarks/adaptive_week3.cpp
+// benchmarks/benchmark_routing_validation.cpp
 //
-// Week 3 deliverable: formalized decision engine evaluation.
+// Decision engine routing validation across all workload types.
 //
-// Scope (per Week 3 plan):
-//   - Expand from JSON-only to all three datasets:
 //     Telemetry, JSON, Binary
-//   - Report heuristic feature distributions per dataset to
-//     justify threshold calibration choices
-//   - Verify delta encoding activates on telemetry and not
-//     on the other two (the key Week 3 correctness check)
-//   - Produce per-dataset adaptive vs static comparison table
-//   - Output: results/adaptive_week3.csv
+// Output: results/routing_validation.csv
 //
 // No src/ changes — the engine, heuristics, and strategies
 // are already complete. This benchmark exercises all three
@@ -36,7 +29,7 @@
 using Clock = std::chrono::high_resolution_clock;
 
 // ============================================================
-//  Per-chunk record (same as Week 2, reused here)
+//  Per-chunk record
 // ============================================================
 struct ChunkLog {
     size_t      index;
@@ -76,7 +69,7 @@ std::vector<ChunkLog> runAdaptive(
         Chunk processed = chunk;
         if (d.preprocess == Preprocess::DELTA)
             processed = deltaEncode(chunk);
-        // BitPack: Week 5 scope
+        // BitPack: not applicable to this workload
 
         Chunk compressed;
         switch (d.algorithm) {
@@ -170,7 +163,7 @@ StaticResult aggregate(const std::vector<ChunkLog>& log) {
 // ============================================================
 //  Feature distribution report for threshold calibration
 //
-//  This is the Week 3 "calibration" section — shows the
+//  Feature distribution report for threshold calibration — shows the
 //  observed entropy and smoothness ranges per dataset, which
 //  justifies the chosen threshold values.
 // ============================================================
@@ -251,11 +244,12 @@ int main() {
     std::vector<std::pair<std::string, Chunk>> datasets = {
         { "Telemetry", generateTelemetry(DATA_SIZE) },
         { "JSON",      generateJSON(DATA_SIZE)      },
-        { "Binary",    generateBinary(DATA_SIZE)    }
+        { "Binary",    generateBinary(DATA_SIZE)    },
+        { "Nibble",    generateNibble(DATA_SIZE)    }
     };
 
     std::cout << "========================================\n";
-    std::cout << "  Week 3: Multi-Dataset Adaptive Engine\n";
+    std::cout << "  Decision Engine Routing Validation\n";
     std::cout << "========================================\n";
     std::cout << "Chunk size : " << CHUNK_SIZE << " bytes\n";
     std::cout << "Thresholds : entropy  > " << cfg.entropyThreshold
@@ -280,7 +274,7 @@ int main() {
     }
 
     // --------------------------------------------------------
-    //  Strategy activation verification (the key Week 3 check)
+    //  Strategy activation verification
     //
     //  Expected:
     //    Telemetry → Delta activated (high smoothness ~0.99)
@@ -350,7 +344,7 @@ int main() {
     // --------------------------------------------------------
     //  Save CSV (all three datasets combined)
     // --------------------------------------------------------
-    std::ofstream csv("results/adaptive_week3.csv");
+    std::ofstream csv("results/routing_validation.csv");
     csv << "dataset,chunk_index,entropy,smoothness,"
            "algorithm,preprocess,original_bytes,"
            "compressed_bytes,ratio,latency_ms\n";
@@ -370,6 +364,6 @@ int main() {
         }
     }
 
-    std::cout << "\nPer-chunk log saved to results/adaptive_week3.csv\n";
+    std::cout << "\nPer-chunk log saved to results/routing_validation.csv\n";
     return 0;
 }

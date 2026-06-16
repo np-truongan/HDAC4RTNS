@@ -1,9 +1,9 @@
 // benchmarks/baseline.cpp
 //
-// Week 1 deliverable: baseline performance dataset.
+// Baseline benchmark: static algorithm performance dataset.
 //
 // Measures compression ratio, throughput, and latency for
-// LZ4, ZSTD, and GZIP across three workload types and four
+// LZ4, ZSTD, and GZIP across four workload types and four
 // chunk sizes.  All measurements use real library calls.
 // Output is written to results/baseline.csv.
 // ============================================================
@@ -88,7 +88,7 @@ BaselineResult runBaseline(
 }
 
 // ============================================================
-//  Main
+//  Main 
 // ============================================================
 int main() {
     const size_t DATA_SIZE = 1 << 20;   // 1 MB per dataset
@@ -96,7 +96,8 @@ int main() {
     std::vector<std::pair<std::string, Chunk>> datasets = {
         { "Telemetry", generateTelemetry(DATA_SIZE) },
         { "JSON",      generateJSON(DATA_SIZE)      },
-        { "Binary",    generateBinary(DATA_SIZE)    }
+        { "Binary",    generateBinary(DATA_SIZE)    },
+        { "Nibble",    generateNibble(DATA_SIZE)    }
     };
 
     std::vector<size_t> chunkSizes = { 1024, 4096, 16384, 65536 };

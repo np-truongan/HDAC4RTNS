@@ -1,15 +1,4 @@
-// benchmarks/benchmark_sensitivity.cpp
-//
-// Week 7 deliverable: threshold sensitivity analysis.
-//
-// Sweeps the two key decision thresholds independently:
-//   - Entropy threshold:    5.0, 5.5, 6.0, 6.5, 7.0, 7.5
-//   - Smoothness threshold: 0.5, 0.6, 0.7, 0.8, 0.9
-//
-// For each threshold value, runs all four workloads and records
-// avg compression ratio and avg latency. Shows that the default
-// values (6.5 and 0.7) sit at the optimal trade-off point.
-// Output: results/sensitivity_week7.csv
+
 
 #include "generators.h"
 #include "heuristics.h"
@@ -99,6 +88,8 @@ SweepResult runWithConfig(
     };
 }
 
+
+
 // ============================================================
 //  Main
 // ============================================================
@@ -115,13 +106,13 @@ int main() {
     };
 
     std::cout << "========================================\n";
-    std::cout << "  Week 7: Threshold Sensitivity Analysis\n";
+    std::cout << "  Threshold Sensitivity Analysis\n";
     std::cout << "========================================\n";
     std::cout << "Data size  : 1 MB per workload\n";
     std::cout << "Chunk size : " << CHUNK_SIZE << " bytes\n";
     std::cout << "Default    : entropy=6.5, smoothness=0.7\n";
 
-    std::ofstream csv("results/sensitivity_week7.csv");
+    std::ofstream csv("results/sensitivity.csv");
     csv << "sweep,threshold_value,avg_ratio,avg_latency_ms,throughput_mbps\n";
 
     // --------------------------------------------------------
@@ -216,6 +207,7 @@ int main() {
               << "                  Provides robust separation with\n"
               << "                  no ambiguous cases in this workload set.\n";
 
-    std::cout << "\nResults saved to results/sensitivity_week7.csv\n";
+    std::cout << "\nResults saved to results/sensitivity.csv\n";
     return 0;
 }
+

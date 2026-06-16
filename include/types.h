@@ -5,15 +5,9 @@
 #include <cstdint>
 #include <cstddef>
 
-// ============================================================
-//  Primitive types
-// ============================================================
 using Byte  = uint8_t;
 using Chunk = std::vector<Byte>;
 
-// ============================================================
-//  Compression strategies
-// ============================================================
 enum class Algorithm {
     LZ4,
     ZSTD,
@@ -26,25 +20,22 @@ enum class Preprocess {
     BITPACK
 };
 
-// ============================================================
-//  Heuristic features extracted from a chunk
-// ============================================================
 struct Features {
-    double entropy    = 0.0;   // Shannon entropy  [0, 8]
-    double smoothness = 0.0;   // Sequential similarity [0, 1]
+    double entropy    = 0.0;
+    double smoothness = 0.0;
 };
 
-// ============================================================
-//  Decision produced by the engine
-// ============================================================
 struct Decision {
     Algorithm  algorithm   = Algorithm::ZSTD;
     Preprocess preprocess  = Preprocess::NONE;
 };
 
-// ============================================================
-//  Per-chunk result recorded during a benchmark run
-// ============================================================
+struct CompressResult {
+    double ratio            = 0.0;
+    size_t compressed_bytes = 0;
+    size_t original_bytes   = 0;
+};
+
 struct ChunkResult {
     size_t      originalSize     = 0;
     size_t      compressedSize   = 0;
@@ -53,11 +44,9 @@ struct ChunkResult {
     Features    features;
     Decision    decision;
     std::string workloadType;
+    Chunk       compressedData;
 };
 
-// ============================================================
-//  Aggregate metrics across a full benchmark run
-// ============================================================
 struct RunMetrics {
     double avgCompressionRatio = 0.0;
     double avgLatencyMs        = 0.0;
@@ -68,25 +57,17 @@ struct RunMetrics {
     std::string systemName;
 };
 
-// ============================================================
-//  Wire frame: what travels over the socket
-//
-//  Every compressed chunk is prefixed with this fixed-size
-//  header so the receiver knows how to decompress it and
-//  can measure end-to-end latency via sendTimestampUs.
-//
-//  Layout on wire (little-endian): [FrameHeader][compressed_bytes]
-// ============================================================
 struct FrameHeader {
-    uint32_t magic           = 0xADC0DE42; // sanity check
+    uint32_t magic           = 0xADC0DE42;
     uint32_t chunkId         = 0;
     uint32_t originalSize    = 0;
+    uint32_t preprocessedSize = 0;
     uint32_t compressedSize  = 0;
-    uint8_t  algorithm       = 0;          // Algorithm enum value
-    uint8_t  preprocess      = 0;          // Preprocess enum value
-    uint8_t  workloadType    = 0;          // 0=Telemetry 1=JSON 2=Binary 3=Nibble
+    uint8_t  algorithm       = 0;
+    uint8_t  preprocess      = 0;
+    uint8_t  workloadType    = 0;
     uint8_t  _pad            = 0;
-    uint64_t sendTimestampUs = 0;          // sender wall-clock (microseconds)
+    uint64_t sendTimestampUs = 0;
 };
 
 inline std::string workloadName(uint8_t idx) {
@@ -95,6 +76,7 @@ inline std::string workloadName(uint8_t idx) {
         case 1: return "JSON";
         case 2: return "Binary";
         case 3: return "Nibble";
+        case 4: return "Boundary";
     }
     return "Unknown";
 }
@@ -104,12 +86,10 @@ inline uint8_t workloadIndex(const std::string& name) {
     if (name == "JSON")      return 1;
     if (name == "Binary")    return 2;
     if (name == "Nibble")    return 3;
+    if (name == "Boundary")  return 4;
     return 255;
 }
 
-// ============================================================
-//  Per-chunk network measurement (recorded by receiver)
-// ============================================================
 struct NetworkResult {
     uint32_t    chunkId;
     std::string workload;
@@ -121,9 +101,6 @@ struct NetworkResult {
     double      endToEndLatencyMs;
 };
 
-// ============================================================
-//  Statistical summary over N repeated trials
-// ============================================================
 struct TrialStats {
     std::string label;
     int         n        = 0;
@@ -135,9 +112,6 @@ struct TrialStats {
     double      max      = 0.0;
 };
 
-// ============================================================
-//  Helpers
-// ============================================================
 inline std::string toString(Algorithm a) {
     switch (a) {
         case Algorithm::LZ4:  return "LZ4";

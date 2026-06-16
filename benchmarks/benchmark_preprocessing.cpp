@@ -1,21 +1,8 @@
-// benchmarks/adaptive_week5.cpp
+// benchmarks/benchmark_preprocessing.cpp
 //
-// Week 5 deliverable: bit-packing + preprocessing-aware decisions.
+// Preprocessing validation benchmark: Delta, BitPack, and None paths.
 //
-// Scope (per Week 5 plan):
-//   - Introduce the Nibble workload as the canonical bit-pack
-//     input (values in [0,15], engine routes to BitPack+ZSTD)
-//   - Run all four workloads through the async Pipeline:
-//     Telemetry, JSON, Binary, Nibble
-//   - Demonstrate that the preprocessing-aware decision logic
-//     correctly handles all four code paths:
-//       Telemetry  -> Delta   + ZSTD
-//       JSON       -> None    + ZSTD
-//       Binary     -> None    + LZ4
-//       Nibble     -> BitPack + ZSTD
-//   - Show the compression gain from BitPack vs raw ZSTD on
-//     Nibble data (the Week 5 key result)
-//   - Output: results/pipeline_week5.csv
+// Output: results/preprocessing_validation.csv
 
 #include "pipeline.h"
 #include "generators.h"
@@ -153,7 +140,7 @@ int main() {
     EngineConfig cfg;
 
     std::cout << "========================================\n";
-    std::cout << "  Week 5: BitPack + Preprocessing-Aware\n";
+    std::cout << "  Preprocessing Validation Benchmark\n";
     std::cout << "========================================\n";
     std::cout << "Workloads  : Telemetry, JSON, Binary, Nibble\n";
     std::cout << "Chunk size : " << CHUNK_SIZE << " bytes\n";
@@ -264,11 +251,11 @@ int main() {
 
     // Aggregate metrics
     std::cout << "\n--- Aggregate Pipeline Metrics ---\n";
-    RunMetrics m = pipeline.computeMetrics("Adaptive Pipeline (Week 5)");
+    RunMetrics m = pipeline.computeMetrics("Adaptive Pipeline");
     printRunMetrics(m);
 
     // Save CSV
-    saveResultsCSV(results, "results/pipeline_week5.csv");
-    std::cout << "\nFull results saved to results/pipeline_week5.csv\n";
+    saveResultsCSV(results, "results/preprocessing_validation.csv");
+    std::cout << "\nFull results saved to results/preprocessing_validation.csv\n";
     return 0;
 }

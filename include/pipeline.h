@@ -5,29 +5,11 @@
 #include <vector>
 #include <functional>
 
-// ============================================================
-//  StreamItem: what the producer puts on the queue
-// ============================================================
 struct StreamItem {
     Chunk       data;
-    std::string workloadType;   // "Telemetry" | "JSON" | "Binary"
+    std::string workloadType;   
 };
 
-// ============================================================
-//  Pipeline
-//
-//  Owns an internal thread-safe queue.  The producer calls
-//  push(); the consumer thread drains it, runs heuristics,
-//  makes a decision, applies preprocessing, compresses with
-//  real library calls, and records a ChunkResult.
-//
-//  Usage:
-//      Pipeline p;
-//      p.start();
-//      for (auto& item : myStream) p.push(item);
-//      p.finish();
-//      auto results = p.getResults();
-// ============================================================
 class Pipeline {
 public:
     explicit Pipeline(EngineConfig cfg = EngineConfig{});
@@ -39,15 +21,12 @@ public:
 
     const std::vector<ChunkResult>& getResults() const;
     RunMetrics computeMetrics(const std::string& systemName) const;
-
+    bool tryPopResult(ChunkResult& out);
 private:
     struct Impl;
     Impl* impl;
 };
 
-// ============================================================
-//  Metrics helpers
-// ============================================================
 RunMetrics aggregateResults(
     const std::vector<ChunkResult>& results,
     const std::string& systemName);
@@ -57,3 +36,4 @@ void printRunMetrics(const RunMetrics& m);
 void saveResultsCSV(
     const std::vector<ChunkResult>& results,
     const std::string& filepath);
+

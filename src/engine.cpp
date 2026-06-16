@@ -22,7 +22,7 @@
 //       minimal overhead for near-incompressible data),
 //       low entropy → ZSTD (better ratio worth the cost).
 //
-//  This ordering addresses the Week 4 limitation where
+//  This ordering addresses the limitation where
 //  preprocessing and algorithm selection were independent.
 // ============================================================
 Decision decide(const Features& f, const EngineConfig& cfg) {
@@ -50,4 +50,44 @@ Decision decide(const Features& f, const EngineConfig& cfg) {
     }
 
     return d;
+}
+
+Decision alternativeDecision(const Features& f,
+                              const EngineConfig& cfg,
+                              const Decision& chosen)
+{
+    Decision alt;
+
+    // Flip preprocessing: if chosen used DELTA, try NONE; if BITPACK, try NONE;
+    // if NONE, try whichever transform the thresholds would suggest second.
+    if (chosen.preprocess == Preprocess::DELTA) {
+        // alternative: skip delta, route on entropy only
+        alt.preprocess = Preprocess::NONE;
+    } else if (chosen.preprocess == Preprocess::BITPACK) {
+        alt.preprocess = Preprocess::NONE;
+    } else {
+        // chosen had no preprocessing — try delta as the alternative
+        alt.preprocess = Preprocess::DELTA;
+    }
+
+    // Re-derive algorithm for the alternative preprocessing
+    if (alt.preprocess != Preprocess::NONE) {
+        alt.algorithm = Algorithm::ZSTD;
+    } else {
+        alt.algorithm = (f.entropy > cfg.entropyThreshold)
+                        ? Algorithm::LZ4
+                        : Algorithm::ZSTD;
+    }
+
+    // Ensure we actually return something different from chosen
+    // (edge case: if both end up identical, flip the algorithm)
+    if (alt.algorithm == chosen.algorithm &&
+        alt.preprocess == chosen.preprocess)
+    {
+        alt.algorithm = (chosen.algorithm == Algorithm::LZ4)
+                        ? Algorithm::ZSTD
+                        : Algorithm::LZ4;
+    }
+
+    return alt;
 }

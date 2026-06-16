@@ -10,10 +10,6 @@
 #include <iomanip>
 #include <fstream>
 
-// ============================================================
-//  Compute TrialStats from a vector of measurements.
-//  N >= 30 recommended for CLT to apply.
-// ============================================================
 inline TrialStats computeStats(
     const std::string&         label,
     const std::vector<double>& values)
@@ -41,9 +37,6 @@ inline TrialStats computeStats(
     return s;
 }
 
-// ============================================================
-//  Print a TrialStats row to stdout
-// ============================================================
 inline void printStats(const TrialStats& s) {
     std::cout << std::fixed << std::setprecision(4);
     std::cout << std::left  << std::setw(30) << s.label
@@ -69,9 +62,6 @@ inline void printStatsHeader() {
     std::cout << std::string(74, '-') << "\n";
 }
 
-// ============================================================
-//  Write a collection of TrialStats to CSV
-// ============================================================
 inline void saveStatsCSV(
     const std::vector<TrialStats>& stats,
     const std::string& filepath)

@@ -1,20 +1,4 @@
-// benchmarks/adaptive_week6.cpp
-//
-// Week 6 deliverable: continuous heterogeneous streaming evaluation.
-//
-// Scope (per Week 6 plan):
-//   - Introduce a dedicated producer thread that generates and
-//     pushes chunks with realistic inter-arrival delays,
-//     simulating a live network stream rather than a pre-built
-//     batch pushed all at once
-//   - Interleave all four workload types continuously
-//   - Measure per-workload latency, throughput, and jitter
-//     under genuine concurrent producer/consumer execution
-//   - Verify runtime stability: strategy switching must not
-//     introduce processing stalls or latency spikes
-//   - Report latency percentiles (p50, p95, p99) in addition
-//     to mean and jitter -- more meaningful for real-time systems
-//   - Output: results/pipeline_week6.csv
+
 
 #include "pipeline.h"
 #include "generators.h"
@@ -35,22 +19,13 @@ using Clock     = std::chrono::high_resolution_clock;
 using Ms        = std::chrono::milliseconds;
 using namespace std::chrono_literals;
 
-// ============================================================
-//  Producer thread
-//
-//  Generates chunks in a rotating workload pattern and pushes
-//  them onto the pipeline with a configurable inter-arrival
-//  delay. This simulates a realistic streaming source where
-//  data arrives at a steady rate rather than all at once.
-// ============================================================
 void producerThread(
     Pipeline&   pipeline,
     size_t      totalChunks,
     size_t      chunkSize,
-    int         interArrivalMs)    // delay between pushes
+    int         interArrivalMs)   
 {
-    // Pre-generate one full dataset per workload type
-    // so generation cost doesn't pollute inter-arrival timing
+
     const size_t dataSize = totalChunks * chunkSize;
     Chunk telemetry = generateTelemetry(dataSize);
     Chunk json      = generateJSON(dataSize);
@@ -61,7 +36,6 @@ void producerThread(
     const Chunk*      pools[] = { &telemetry, &json, &binary, &nibble };
     const int         nTypes  = 4;
 
-    // Track offset per workload independently
     size_t offsets[4] = {0, 0, 0, 0};
 
     for (size_t i = 0; i < totalChunks; ++i) {
@@ -221,7 +195,7 @@ int main() {
     EngineConfig cfg;
 
     std::cout << "========================================\n";
-    std::cout << "  Week 6: Continuous Streaming Evaluation\n";
+    std::cout << "  Streaming Stability Benchmark\n";
     std::cout << "========================================\n";
     std::cout << "Total chunks     : " << TOTAL_CHUNKS  << "\n";
     std::cout << "Chunk size       : " << CHUNK_SIZE    << " bytes\n";
@@ -276,14 +250,14 @@ int main() {
     //  Aggregate metrics
     // --------------------------------------------------------
     std::cout << "\n--- Aggregate Pipeline Metrics ---\n";
-    RunMetrics m = pipeline.computeMetrics("Adaptive Pipeline (Week 6)");
+    RunMetrics m = pipeline.computeMetrics("Adaptive Pipeline");
     printRunMetrics(m);
 
     // --------------------------------------------------------
     //  Save CSV
     // --------------------------------------------------------
-    saveResultsCSV(results, "results/pipeline_week6.csv");
-    std::cout << "\nFull results saved to results/pipeline_week6.csv\n";
+    saveResultsCSV(results, "results/streaming_stability.csv");
+    std::cout << "\nFull results saved to results/streaming_stability.csv\n";
 
     return 0;
 }

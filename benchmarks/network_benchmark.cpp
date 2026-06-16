@@ -1,26 +1,3 @@
-// benchmarks/network_benchmark.cpp
-//
-// Loopback TCP network benchmark with standardized conditions.
-//
-// Architecture:
-//   - Receiver thread binds a TCP socket and listens
-//   - Sender thread connects, compresses chunks, sends frames
-//   - Receiver decompresses, records end-to-end latency
-//   - Repeated for N_TRIALS runs per system per scenario
-//   - 95% confidence intervals computed across trials
-//
-// Network conditions via tc netem (applied externally):
-//   Scenario A: baseline   — no netem (loopback only)
-//   Scenario B: moderate   — 50ms RTT, 100Mbps bandwidth
-//   Scenario C: constrained — 200ms RTT, 10Mbps, 0.5% loss
-//
-// The benchmark itself does not apply netem — the caller
-// script (scripts/run_network_benchmark.sh) applies and
-// removes netem conditions between scenario runs.
-//
-// Output: results/network_<scenario>.csv
-//         results/network_stats_<scenario>.csv
-
 #include "generators.h"
 #include "heuristics.h"
 #include "strategies.h"
@@ -42,25 +19,30 @@
 #include <cassert>
 #include <atomic>
 #include <functional>
+#include <map>
 
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <unistd.h>
-#include <map>
+
+static constexpr int    PORT             = 54321;
+static constexpr size_t CHUNK_SIZE       = 4096;
+static constexpr size_t DATA_SIZE        = 1 << 20;
+static constexpr int    N_TRIALS         = 30;
+static constexpr int    CHUNKS_PER_TRIAL = 40;
 
 // ============================================================
-//  Constants
+//  Trial mode
 // ============================================================
-static constexpr int    PORT          = 54321;
-static constexpr size_t CHUNK_SIZE    = 4096;
-static constexpr size_t DATA_SIZE     = 1 << 20;   // 1MB per workload
-static constexpr int    N_TRIALS      = 30;         // per system per scenario
-static constexpr int    CHUNKS_PER_TRIAL = 40;      // 10 per workload type
+enum class TrialMode { MIXED, SINGLE };
+
+static std::string modeName(TrialMode m) {
+    return (m == TrialMode::MIXED) ? "mixed" : "single";
+}
 
 // ============================================================
-//  Compress one chunk using the given static algorithm.
-//  Returns compressed bytes and fills the header fields.
+//  Static compress helper
 // ============================================================
 static Chunk compressStatic(
     const Chunk&  chunk,
@@ -98,7 +80,7 @@ static Chunk compressStatic(
 }
 
 // ============================================================
-//  Decompress one frame payload using header metadata.
+//  Decompress one received frame
 // ============================================================
 static Chunk decompressFrame(const FrameHeader& hdr, const Chunk& payload) {
     Algorithm  algo = static_cast<Algorithm>(hdr.algorithm);
@@ -107,17 +89,13 @@ static Chunk decompressFrame(const FrameHeader& hdr, const Chunk& payload) {
     Chunk decompressed;
     switch (algo) {
         case Algorithm::LZ4:
-            decompressed = decompressLZ4(payload, hdr.originalSize);
-            break;
+            decompressed = decompressLZ4(payload, hdr.originalSize); break;
         case Algorithm::ZSTD:
-            decompressed = decompressZSTD(payload);
-            break;
+            decompressed = decompressZSTD(payload);                  break;
         case Algorithm::GZIP:
-            decompressed = decompressGZIP(payload, hdr.originalSize);
-            break;
+            decompressed = decompressGZIP(payload, hdr.originalSize); break;
     }
 
-    // Reverse preprocessing
     if (prep == Preprocess::DELTA)
         decompressed = deltaDecode(decompressed);
     else if (prep == Preprocess::BITPACK)
@@ -127,8 +105,7 @@ static Chunk decompressFrame(const FrameHeader& hdr, const Chunk& payload) {
 }
 
 // ============================================================
-//  Stream of chunks for one trial
-//  10 chunks per workload type, interleaved
+//  TrialChunk — one chunk with its metadata
 // ============================================================
 struct TrialChunk {
     Chunk       data;
@@ -136,7 +113,8 @@ struct TrialChunk {
     uint8_t     workloadIdx;
 };
 
-static std::vector<TrialChunk> buildTrialStream(
+// Build a mixed stream: chunksPerWorkload chunks per workload, interleaved.
+static std::vector<TrialChunk> buildMixedStream(
     const std::vector<std::pair<std::string, Chunk>>& datasets,
     int chunksPerWorkload)
 {
@@ -148,34 +126,44 @@ static std::vector<TrialChunk> buildTrialStream(
             size_t off = (c * CHUNK_SIZE) % (data.size() - CHUNK_SIZE);
             stream.push_back({
                 Chunk(data.begin() + off, data.begin() + off + CHUNK_SIZE),
-                name,
-                idx
+                name, idx
             });
         }
     }
     return stream;
 }
 
+// Build a single-workload stream: all chunks from one workload.
+static std::vector<TrialChunk> buildSingleStream(
+    const std::string& workloadName_,
+    const Chunk&       data,
+    int                totalChunks)
+{
+    std::vector<TrialChunk> stream;
+    uint8_t idx = workloadIndex(workloadName_);
+    for (int c = 0; c < totalChunks; ++c) {
+        size_t off = (c * CHUNK_SIZE) % (data.size() - CHUNK_SIZE);
+        stream.push_back({
+            Chunk(data.begin() + off, data.begin() + off + CHUNK_SIZE),
+            workloadName_, idx
+        });
+    }
+    return stream;
+}
+
 // ============================================================
 //  Receiver thread
-//
-//  Binds socket, signals ready, then for each trial:
-//    - Accepts connection
-//    - Receives all frames
-//    - Records end-to-end latency per frame
-//    - Closes connection (sender reconnects each trial)
 // ============================================================
 struct ReceiverResult {
     std::vector<NetworkResult> perChunk;
 };
 
 static void receiverThread(
-    int                        nTrials,
-    int                        chunksPerTrial,
-    std::atomic<bool>&         receiverReady,
+    int                          nTrials,
+    int                          chunksPerTrial,
+    std::atomic<bool>&           receiverReady,
     std::vector<ReceiverResult>& trialResults)
 {
-    // Create and bind listening socket
     int listenFd = ::socket(AF_INET, SOCK_STREAM, 0);
     int opt = 1;
     ::setsockopt(listenFd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
@@ -187,37 +175,33 @@ static void receiverThread(
 
     ::bind(listenFd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr));
     ::listen(listenFd, 1);
-
     receiverReady.store(true);
 
     for (int trial = 0; trial < nTrials; ++trial) {
         int connFd = ::accept(listenFd, nullptr, nullptr);
-
         ReceiverResult result;
 
         for (int i = 0; i < chunksPerTrial; ++i) {
             FrameHeader hdr;
             Chunk payload;
-
             if (!recvFrame(connFd, hdr, payload)) break;
 
             uint64_t recvUs = nowMicros();
             double e2eMs = static_cast<double>(recvUs - hdr.sendTimestampUs)
                            / 1000.0;
 
-            // Decompress (verifies correctness implicitly)
             Chunk original = decompressFrame(hdr, payload);
 
             NetworkResult nr;
-            nr.chunkId            = hdr.chunkId;
-            nr.workload           = workloadName(hdr.workloadType);
-            nr.algorithm          = toString(static_cast<Algorithm>(hdr.algorithm));
-            nr.preprocess         = toString(static_cast<Preprocess>(hdr.preprocess));
-            nr.originalSize       = hdr.originalSize;
-            nr.compressedSize     = hdr.compressedSize;
-            nr.compressionRatio   = static_cast<double>(hdr.compressedSize)
-                                    / hdr.originalSize;
-            nr.endToEndLatencyMs  = e2eMs;
+            nr.chunkId           = hdr.chunkId;
+            nr.workload          = workloadName(hdr.workloadType);
+            nr.algorithm         = toString(static_cast<Algorithm>(hdr.algorithm));
+            nr.preprocess        = toString(static_cast<Preprocess>(hdr.preprocess));
+            nr.originalSize      = hdr.originalSize;
+            nr.compressedSize    = hdr.compressedSize;
+            nr.compressionRatio  = static_cast<double>(hdr.compressedSize)
+                                   / hdr.originalSize;
+            nr.endToEndLatencyMs = e2eMs;
 
             result.perChunk.push_back(nr);
         }
@@ -253,10 +237,7 @@ static void runSenderTrial(
         hdr.workloadType = tc.workloadIdx;
 
         Chunk compressed = compressFn(tc.data, hdr);
-
-        // Stamp as late as possible before send
         hdr.sendTimestampUs = nowMicros();
-
         sendFrame(fd, hdr, compressed);
     }
 
@@ -264,33 +245,30 @@ static void runSenderTrial(
 }
 
 // ============================================================
-//  Run N_TRIALS for one system, return per-trial results
+//  Run N_TRIALS for one system + stream, return per-trial results
 // ============================================================
 static std::vector<ReceiverResult> runSystem(
     const std::string&             systemName,
     const std::vector<TrialChunk>& stream,
     std::function<Chunk(const Chunk&, FrameHeader&)> compressFn)
 {
-    std::cout << "  Running " << systemName << " ("
-              << N_TRIALS << " trials)...\n";
+    std::cout << "  Running " << systemName
+              << " (" << N_TRIALS << " trials)...\n";
 
     std::vector<ReceiverResult> trialResults;
     trialResults.reserve(N_TRIALS);
 
     std::atomic<bool> receiverReady{false};
 
-    // Launch receiver
     std::thread recv(receiverThread,
         N_TRIALS,
         static_cast<int>(stream.size()),
         std::ref(receiverReady),
         std::ref(trialResults));
 
-    // Wait for receiver to bind
     while (!receiverReady.load())
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
 
-    // Run sender trials sequentially
     for (int t = 0; t < N_TRIALS; ++t) {
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
         runSenderTrial(stream, compressFn);
@@ -307,31 +285,28 @@ static std::vector<TrialStats> aggregateStats(
     const std::string&                 systemName,
     const std::vector<ReceiverResult>& trials)
 {
-    // Collect latencies per workload across all trials
     std::map<std::string, std::vector<double>> latByWorkload;
     std::map<std::string, std::vector<double>> ratioByWorkload;
 
-    for (const auto& trial : trials) {
+    for (const auto& trial : trials)
         for (const auto& r : trial.perChunk) {
             latByWorkload  [r.workload].push_back(r.endToEndLatencyMs);
             ratioByWorkload[r.workload].push_back(r.compressionRatio);
         }
-    }
 
     std::vector<TrialStats> stats;
     for (auto& [workload, lats] : latByWorkload) {
-        auto latStats   = computeStats(systemName + " | " + workload + " | latency_ms",
-                                       lats);
-        auto ratioStats = computeStats(systemName + " | " + workload + " | ratio",
-                                       ratioByWorkload[workload]);
-        stats.push_back(latStats);
-        stats.push_back(ratioStats);
+        stats.push_back(computeStats(
+            systemName + " | " + workload + " | latency_ms", lats));
+        stats.push_back(computeStats(
+            systemName + " | " + workload + " | ratio",
+            ratioByWorkload[workload]));
     }
     return stats;
 }
 
 // ============================================================
-//  Save raw per-chunk results from all trials to CSV
+//  Save raw per-chunk results to CSV
 // ============================================================
 static void saveRawCSV(
     const std::string&                 systemName,
@@ -339,21 +314,19 @@ static void saveRawCSV(
     const std::string&                 scenario,
     std::ofstream&                     csv)
 {
-    for (int t = 0; t < static_cast<int>(trials.size()); ++t) {
-        for (const auto& r : trials[t].perChunk) {
-            csv << systemName         << ","
-                << scenario           << ","
-                << t                  << ","
-                << r.chunkId          << ","
-                << r.workload         << ","
-                << r.algorithm        << ","
-                << r.preprocess       << ","
-                << r.originalSize     << ","
-                << r.compressedSize   << ","
-                << r.compressionRatio << ","
+    for (int t = 0; t < static_cast<int>(trials.size()); ++t)
+        for (const auto& r : trials[t].perChunk)
+            csv << systemName          << ","
+                << scenario            << ","
+                << t                   << ","
+                << r.chunkId           << ","
+                << r.workload          << ","
+                << r.algorithm         << ","
+                << r.preprocess        << ","
+                << r.originalSize      << ","
+                << r.compressedSize    << ","
+                << r.compressionRatio  << ","
                 << r.endToEndLatencyMs << "\n";
-        }
-    }
 }
 
 // ============================================================
@@ -364,45 +337,53 @@ static EngineConfig g_cfg;
 static Chunk adaptiveCompress(const Chunk& chunk, FrameHeader& hdr) {
     Features f = extractFeatures(chunk);
     Decision d = decide(f, g_cfg);
+    return compressStatic(chunk, d.algorithm, d.preprocess, hdr);
+}
 
-    Preprocess prep = d.preprocess;
-    Algorithm  algo = d.algorithm;
+// ============================================================
+//  Core benchmark runner — shared by mixed and single-workload modes
+// ============================================================
+using CompressFn = std::function<Chunk(const Chunk&, FrameHeader&)>;
 
-    return compressStatic(chunk, algo, prep, hdr);
+static void runBenchmark(
+    const std::string&                                  scenario,
+    const std::string&                                  modeTag,
+    const std::vector<TrialChunk>&                      stream,
+    const std::vector<std::pair<std::string, CompressFn>>& systems,
+    std::ofstream&                                      rawCsv,
+    std::vector<TrialStats>&                            allStats)
+{
+    for (const auto& [name, fn] : systems) {
+        std::string fullName = name + "_" + modeTag;
+        auto trials = runSystem(fullName, stream, fn);
+        saveRawCSV(fullName, trials, scenario, rawCsv);
+        auto stats = aggregateStats(fullName, trials);
+        for (auto& s : stats) allStats.push_back(s);
+    }
 }
 
 // ============================================================
 //  Main
 // ============================================================
 int main(int argc, char* argv[]) {
-    // Accept scenario name as argument (for CSV labeling)
     std::string scenario = (argc > 1) ? argv[1] : "baseline";
 
     std::cout << "========================================\n";
     std::cout << "  Network Benchmark — Scenario: " << scenario << "\n";
     std::cout << "========================================\n";
-    std::cout << "Trials per system : " << N_TRIALS        << "\n";
+    std::cout << "Trials per system : " << N_TRIALS         << "\n";
     std::cout << "Chunks per trial  : " << CHUNKS_PER_TRIAL << "\n";
-    std::cout << "Chunk size        : " << CHUNK_SIZE       << " bytes\n";
-    std::cout << "Port              : " << PORT             << "\n\n";
+    std::cout << "Chunk size        : " << CHUNK_SIZE        << " bytes\n";
+    std::cout << "Port              : " << PORT              << "\n\n";
 
-    // --------------------------------------------------------
-    //  Generate datasets (reused across all trials)
-    // --------------------------------------------------------
     std::vector<std::pair<std::string, Chunk>> datasets = {
         { "Telemetry", generateTelemetry(DATA_SIZE) },
-        { "JSON",      generateJSON(DATA_SIZE)      },
-        { "Binary",    generateBinary(DATA_SIZE)    },
-        { "Nibble",    generateNibble(DATA_SIZE)    }
+        { "JSON",      generateJSON(DATA_SIZE)       },
+        { "Binary",    generateBinary(DATA_SIZE)     },
+        { "Nibble",    generateNibble(DATA_SIZE)     }
     };
 
     int chunksPerWorkload = CHUNKS_PER_TRIAL / static_cast<int>(datasets.size());
-    auto stream = buildTrialStream(datasets, chunksPerWorkload);
-
-    // --------------------------------------------------------
-    //  Define systems to benchmark
-    // --------------------------------------------------------
-    using CompressFn = std::function<Chunk(const Chunk&, FrameHeader&)>;
 
     std::vector<std::pair<std::string, CompressFn>> systems = {
         { "LZ4",  [](const Chunk& c, FrameHeader& h) {
@@ -414,9 +395,6 @@ int main(int argc, char* argv[]) {
         { "Adaptive", adaptiveCompress }
     };
 
-    // --------------------------------------------------------
-    //  Open output CSVs
-    // --------------------------------------------------------
     std::string rawPath   = "results/network_"       + scenario + ".csv";
     std::string statsPath = "results/network_stats_" + scenario + ".csv";
 
@@ -427,27 +405,22 @@ int main(int argc, char* argv[]) {
 
     std::vector<TrialStats> allStats;
 
-    // --------------------------------------------------------
-    //  Run each system
-    // --------------------------------------------------------
-    for (auto& [name, fn] : systems) {
-        auto trials = runSystem(name, stream, fn);
-        saveRawCSV(name, trials, scenario, rawCsv);
-        auto stats = aggregateStats(name, trials);
-        for (auto& s : stats) allStats.push_back(s);
-    }
+    // --- Mixed-workload trials (existing behaviour) ---
+    std::cout << "\n[Mode: mixed]\n";
+    auto mixedStream = buildMixedStream(datasets, chunksPerWorkload);
+    runBenchmark(scenario, "mixed", mixedStream, systems, rawCsv, allStats);
 
-    // --------------------------------------------------------
-    //  Print summary table
-    // --------------------------------------------------------
+    // --- Single-workload trials for Binary (isolates binary-specific latency) ---
+    std::cout << "\n[Mode: single / Binary]\n";
+    const Chunk& binaryData = datasets[2].second;   // index 2 = Binary
+    auto singleStream = buildSingleStream("Binary", binaryData, CHUNKS_PER_TRIAL);
+    runBenchmark(scenario, "single_binary", singleStream, systems, rawCsv, allStats);
+
     std::cout << "\n--- Results: " << scenario << " ---\n";
     printStatsHeader();
     for (const auto& s : allStats)
         printStats(s);
 
-    // --------------------------------------------------------
-    //  Save stats CSV
-    // --------------------------------------------------------
     saveStatsCSV(allStats, statsPath);
 
     std::cout << "\nRaw results  : " << rawPath   << "\n";

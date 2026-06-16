@@ -1,18 +1,8 @@
-// benchmarks/adaptive_week4.cpp
+// benchmarks/benchmark_pipeline_integration.cpp
 //
-// Week 4 deliverable: streaming pipeline integration.
+// Streaming pipeline integration benchmark.
 //
-// Scope (per Week 4 plan):
-//   - Feed all three workload types through the async Pipeline
-//     class for the first time end-to-end
-//   - Interleave workloads to verify strategy switching is
-//     seamless (no stalls, no ordering violations)
-//   - Report per-workload latency and compression ratio from
-//     a single continuous pipeline run
-//   - Identify the Week 4 limitation: decision criteria are
-//     independent — entropy threshold ignores whether delta
-//     was applied (motivates Week 5 refinement)
-//   - Output: results/pipeline_week4.csv
+// Output: results/pipeline_integration.csv
 //
 // This is the first benchmark to use Pipeline directly.
 // All previous benchmarks called compressors in a simple loop.
@@ -147,7 +137,7 @@ std::map<std::string, WorkloadStats> breakdownByWorkload(
 }
 
 // ============================================================
-//  Demonstrate the Week 4 limitation explicitly.
+//  Documents the independent-decision limitation:
 //
 //  The current engine decides algorithm on raw entropy before
 //  considering that delta encoding will transform the data.
@@ -156,10 +146,10 @@ std::map<std::string, WorkloadStats> breakdownByWorkload(
 //  + ZSTD would give a much better ratio.
 //
 //  This is logged here as a documented known limitation,
-//  which Week 5 addresses via preprocessing-aware decisions.
+//  addressed by preprocessing-aware logic in the decision engine.
 // ============================================================
-void demonstrateWeek4Limitation(const std::vector<ChunkResult>& results) {
-    std::cout << "\n--- Week 4 Limitation: Independent Decision Criteria ---\n";
+void demonstrateDecisionLimitation(const std::vector<ChunkResult>& results) {
+    std::cout << "\n--- Decision Limitation: Independent Criteria ---\n";
 
     // Look for telemetry chunks where delta was applied but LZ4 was chosen
     // (In our calibrated engine this shouldn't happen, but we check and report)
@@ -183,7 +173,7 @@ void demonstrateWeek4Limitation(const std::vector<ChunkResult>& results) {
     else
         std::cout << " [LIMITATION: LZ4 after delta wastes preprocessing gains]\n";
 
-    std::cout << "\n  Note: In Week 5, bit-packing is added and the decision\n"
+    std::cout << "\n  Preprocessing-aware logic in the decision engine resolves this.\n"
               << "  logic is made fully preprocessing-aware for all paths.\n";
 }
 
@@ -197,7 +187,7 @@ int main() {
     EngineConfig cfg;   // default calibrated thresholds
 
     std::cout << "========================================\n";
-    std::cout << "  Week 4: Streaming Pipeline Integration\n";
+    std::cout << "  Pipeline Integration Benchmark\n";
     std::cout << "========================================\n";
     std::cout << "Chunk size         : " << CHUNK_SIZE << " bytes\n";
     std::cout << "Chunks per workload: " << CHUNKS_PER_WORKLOAD << "\n";
@@ -305,19 +295,19 @@ int main() {
     //  Aggregate pipeline metrics
     // --------------------------------------------------------
     std::cout << "\n--- Aggregate Pipeline Metrics ---\n";
-    RunMetrics m = pipeline.computeMetrics("Adaptive Pipeline (Week 4)");
+    RunMetrics m = pipeline.computeMetrics("Adaptive Pipeline");
     printRunMetrics(m);
 
     // --------------------------------------------------------
-    //  Document the Week 4 limitation
+    //  Document the independent-decision limitation
     // --------------------------------------------------------
-    demonstrateWeek4Limitation(results);
+    demonstrateDecisionLimitation(results);
 
     // --------------------------------------------------------
     //  Save CSV
     // --------------------------------------------------------
-    saveResultsCSV(results, "results/pipeline_week4.csv");
-    std::cout << "\nFull results saved to results/pipeline_week4.csv\n";
+    saveResultsCSV(results, "results/pipeline_integration.csv");
+    std::cout << "\nFull results saved to results/pipeline_integration.csv\n";
 
     return 0;
 }

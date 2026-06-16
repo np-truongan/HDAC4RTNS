@@ -1,16 +1,16 @@
-// benchmarks/benchmark_week7.cpp
+// benchmarks/benchmark_comparison.cpp
 //
-// Week 7 deliverable: unified comparative benchmark.
+// Static vs adaptive comparison benchmark.
 //
 // Runs all four workloads through four systems:
 //   - Static LZ4
 //   - Static ZSTD
 //   - Static Gzip  (baseline-only, eliminated from adaptive
-//                   after Week 1 on latency grounds)
+
 //   - Adaptive framework
 //
 // Reports per-workload and aggregate metrics for each system.
-// Output: results/comparison_week7.csv
+// Output: results/static_comparison.csv
 
 #include "generators.h"
 #include "heuristics.h"
@@ -245,14 +245,14 @@ int main() {
     EngineConfig cfg;
 
     std::cout << "========================================\n";
-    std::cout << "  Week 7: Unified Comparative Benchmark\n";
+    std::cout << "  Static vs Adaptive Comparison\n";
     std::cout << "========================================\n";
     std::cout << "Data size  : 1 MB per workload\n";
     std::cout << "Chunk size : " << CHUNK_SIZE << " bytes\n";
     std::cout << "Systems    : Static LZ4, Static ZSTD, Static Gzip, Adaptive\n";
     std::cout << "Workloads  : Telemetry, JSON, Binary, Nibble\n";
     std::cout << "\nNote: Gzip included as historical baseline only.\n"
-              << "      Eliminated from adaptive framework after Week 1\n"
+              << "      Eliminated from adaptive framework on latency grounds.\n"
               << "      due to latency being 10-100x higher than LZ4/ZSTD.\n";
 
     // --------------------------------------------------------
@@ -298,7 +298,7 @@ int main() {
     // --------------------------------------------------------
     //  Save CSV
     // --------------------------------------------------------
-    std::ofstream csv("results/comparison_week7.csv");
+    std::ofstream csv("results/static_comparison.csv");
     csv << "system,workload,avg_ratio,avg_latency_ms,"
            "throughput_mbps,jitter_ms,total_original,total_compressed\n";
 
@@ -313,6 +313,6 @@ int main() {
             << r.totalCompressed << "\n";
     }
 
-    std::cout << "\nResults saved to results/comparison_week7.csv\n";
+    std::cout << "\nResults saved to results/static_comparison.csv\n";
     return 0;
 }

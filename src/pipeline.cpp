@@ -25,6 +25,7 @@ struct Pipeline::Impl {
     bool                      done = false;
     std::thread               consumerThread;
     std::vector<ChunkResult>  results;
+    std::mutex                resultsMutex;   
 
     explicit Impl(EngineConfig c) : cfg(c) {}
 
@@ -77,6 +78,7 @@ struct Pipeline::Impl {
         result.compressionRatio =
             static_cast<double>(compressed.size()) /
             static_cast<double>(item.data.size());
+        result.compressedData = compressed;
         result.latencyMs =
             std::chrono::duration<double, std::milli>(t1 - t0).count();
 
@@ -96,7 +98,11 @@ struct Pipeline::Impl {
             queue.pop();
             lock.unlock();
 
-            results.push_back(processChunk(item));
+            ChunkResult cr = processChunk(item);
+            {
+                std::lock_guard<std::mutex> rlock(resultsMutex);
+                results.push_back(std::move(cr));
+            }
         }
     }
 };
@@ -215,4 +221,13 @@ void saveResultsCSV(
           << toString(r.decision.algorithm)  << ","
           << toString(r.decision.preprocess) << "\n";
     }
+}
+
+
+bool Pipeline::tryPopResult(ChunkResult& out) {
+    std::lock_guard<std::mutex> lock(impl->resultsMutex);
+    if (impl->results.empty()) return false;
+    out = std::move(impl->results.front());
+    impl->results.erase(impl->results.begin());
+    return true;
 }
