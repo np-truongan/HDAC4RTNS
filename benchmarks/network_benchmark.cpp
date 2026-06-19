@@ -5,6 +5,7 @@
 #include "framing.h"
 #include "stats.h"
 #include "types.h"
+#include "resource_stats.h"
 
 #include <iostream>
 #include <iomanip>

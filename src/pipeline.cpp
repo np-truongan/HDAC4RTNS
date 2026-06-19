@@ -1,6 +1,7 @@
 #include "pipeline.h"
 #include "heuristics.h"
 #include "strategies.h"
+#include "resource_stats.h"
 
 #include <queue>
 #include <thread>
@@ -9,6 +10,7 @@
 #include <chrono>
 #include <numeric>
 #include <cmath>
+#include <algorithm>
 #include <fstream>
 #include <iostream>
 #include <iomanip>
@@ -41,6 +43,7 @@ struct Pipeline::Impl {
         result.features      = extractFeatures(item.data);
         result.decision      = decide(result.features, cfg);
 
+        ResourceSnapshot rBefore = captureResourceSnapshot();
         auto t0 = std::chrono::high_resolution_clock::now();
 
         // -- Preprocessing --
@@ -70,6 +73,8 @@ struct Pipeline::Impl {
         }
 
         auto t1 = std::chrono::high_resolution_clock::now();
+        ResourceSnapshot rAfter = captureResourceSnapshot();
+        ResourceDelta    rDelta = diffResourceSnapshot(rBefore, rAfter, item.workloadType);
 
         if (compressed.empty())
             throw std::runtime_error("Compression failed for chunk");
@@ -81,6 +86,8 @@ struct Pipeline::Impl {
         result.compressedData = compressed;
         result.latencyMs =
             std::chrono::duration<double, std::milli>(t1 - t0).count();
+        result.cpuTimeMs = rDelta.cpuTimeMs;
+        result.peakRssKb = rDelta.peakRssKb;
 
         return result;
     }
@@ -156,12 +163,15 @@ RunMetrics aggregateResults(
     RunMetrics m;
     m.systemName = systemName;
 
-    double sumRatio = 0, sumLatency = 0, sumThroughput = 0;
+    double sumRatio = 0, sumLatency = 0, sumThroughput = 0, sumCpuTime = 0;
     double totalOriginal = 0, totalCompressed = 0;
+    long   peakRss = 0;
 
     for (const auto& r : results) {
         sumRatio     += r.compressionRatio;
         sumLatency   += r.latencyMs;
+        sumCpuTime   += r.cpuTimeMs;
+        peakRss       = std::max(peakRss, r.peakRssKb);
         totalOriginal   += r.originalSize;
         totalCompressed += r.compressedSize;
 
@@ -175,6 +185,8 @@ RunMetrics aggregateResults(
     m.avgCompressionRatio = sumRatio / n;
     m.avgLatencyMs        = sumLatency / n;
     m.avgThroughputMBps   = sumThroughput / n;
+    m.avgCpuTimeMs        = sumCpuTime / n;
+    m.peakRssKb           = peakRss;
     m.totalOriginalMB     = totalOriginal / (1024.0 * 1024.0);
     m.totalCompressedMB   = totalCompressed / (1024.0 * 1024.0);
 
@@ -194,6 +206,8 @@ void printRunMetrics(const RunMetrics& m) {
     std::cout << "Avg Latency (ms)  : " << m.avgLatencyMs       << "\n";
     std::cout << "Jitter (ms)       : " << m.jitterMs           << "\n";
     std::cout << "Avg Throughput    : " << m.avgThroughputMBps  << " MB/s\n";
+    std::cout << "Avg CPU (ms)      : " << m.avgCpuTimeMs       << "\n";
+    std::cout << "Peak RSS (KB)     : " << m.peakRssKb          << "\n";
     std::cout << "Total Original    : " << m.totalOriginalMB    << " MB\n";
     std::cout << "Total Compressed  : " << m.totalCompressedMB  << " MB\n";
 }
@@ -208,7 +222,8 @@ void saveResultsCSV(
 
     f << "workload,original_bytes,compressed_bytes,"
          "compression_ratio,latency_ms,"
-         "entropy,smoothness,algorithm,preprocess\n";
+         "entropy,smoothness,algorithm,preprocess,"
+         "cpu_time_ms,peak_rss_kb\n";
 
     for (const auto& r : results) {
         f << r.workloadType          << ","
@@ -219,7 +234,9 @@ void saveResultsCSV(
           << r.features.entropy      << ","
           << r.features.smoothness   << ","
           << toString(r.decision.algorithm)  << ","
-          << toString(r.decision.preprocess) << "\n";
+          << toString(r.decision.preprocess) << ","
+          << r.cpuTimeMs              << ","
+          << r.peakRssKb              << "\n";
     }
 }
 

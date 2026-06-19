@@ -45,6 +45,12 @@ struct ChunkResult {
     Decision    decision;
     std::string workloadType;
     Chunk       compressedData;
+    double      cpuTimeMs        = 0.0;  // user+sys CPU time for this chunk's
+                                          // preprocessing + compression (getrusage-based)
+    long        peakRssKb        = 0;    // process peak RSS (KB) observed at the END of
+                                          // this chunk's processing. NOTE: this is a
+                                          // process-wide high-water mark, not a per-chunk
+                                          // delta — see resource_stats.h for details.
 };
 
 struct RunMetrics {
@@ -54,6 +60,9 @@ struct RunMetrics {
     double avgThroughputMBps   = 0.0;
     double totalOriginalMB     = 0.0;
     double totalCompressedMB   = 0.0;
+    double avgCpuTimeMs        = 0.0;  // average CPU time per chunk across the run
+    long   peakRssKb           = 0;    // highest peak RSS observed across all chunks
+                                        // in this run (max of all ChunkResult::peakRssKb)
     std::string systemName;
 };
 
