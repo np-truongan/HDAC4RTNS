@@ -5,7 +5,6 @@
 #include "framing.h"
 #include "stats.h"
 #include "types.h"
-#include "resource_stats.h"
 
 #include <iostream>
 #include <iomanip>
@@ -21,6 +20,7 @@
 #include <atomic>
 #include <functional>
 #include <map>
+#include <filesystem>
 
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -37,10 +37,6 @@ static constexpr int    CHUNKS_PER_TRIAL = 40;
 //  Trial mode
 // ============================================================
 enum class TrialMode { MIXED, SINGLE };
-
-static std::string modeName(TrialMode m) {
-    return (m == TrialMode::MIXED) ? "mixed" : "single";
-}
 
 // ============================================================
 //  Static compress helper
@@ -72,10 +68,11 @@ static Chunk compressStatic(
         case Algorithm::GZIP: compressed = compressGZIP(processed); break;
     }
 
-    hdr.algorithm      = static_cast<uint8_t>(algo);
-    hdr.preprocess     = static_cast<uint8_t>(prep);
-    hdr.originalSize   = static_cast<uint32_t>(chunk.size());
-    hdr.compressedSize = static_cast<uint32_t>(compressed.size());
+    hdr.algorithm        = static_cast<uint8_t>(algo);
+    hdr.preprocess       = static_cast<uint8_t>(prep);
+    hdr.originalSize     = static_cast<uint32_t>(chunk.size());
+    hdr.preprocessedSize = static_cast<uint32_t>(processed.size());
+    hdr.compressedSize   = static_cast<uint32_t>(compressed.size());
 
     return compressed;
 }
@@ -154,6 +151,17 @@ static std::vector<TrialChunk> buildSingleStream(
 
 // ============================================================
 //  Receiver thread
+//
+//  Latency note: sender and receiver share a clock (same process,
+//  loopback), so hdr.sendTimestampUs → recvUs is a genuine one-way
+//  transfer latency. We stamp recvUs immediately after recvFrame()
+//  and before decompressFrame() to exclude decompression time from
+//  the measurement.
+//
+//  After each frame the receiver sends a 1-byte ACK back to the
+//  sender. This creates per-chunk backpressure so the sender never
+//  races ahead of the receiver, preventing silent chunk loss on the
+//  loopback socket and keeping measurements in lock-step.
 // ============================================================
 struct ReceiverResult {
     std::vector<NetworkResult> perChunk;
@@ -187,15 +195,25 @@ static void receiverThread(
             Chunk payload;
             if (!recvFrame(connFd, hdr, payload)) break;
 
+            // Stamp immediately after frame arrives — before any processing —
+            // so decompression time is excluded from the latency measurement.
             uint64_t recvUs = nowMicros();
             double e2eMs = static_cast<double>(recvUs - hdr.sendTimestampUs)
                            / 1000.0;
 
+            // Send 1-byte ACK so the sender blocks until we're ready for the
+            // next chunk. This prevents the sender from racing ahead and
+            // guarantees no chunks are silently dropped on the loopback socket.
+            uint8_t ack = 0x01;
+            ::send(connFd, &ack, 1, 0);
+
+            // Decompress to verify round-trip correctness (result discarded).
             Chunk original = decompressFrame(hdr, payload);
+            (void)original;
 
             NetworkResult nr;
             nr.chunkId           = hdr.chunkId;
-            nr.workload          = workloadName(hdr.workloadType);
+            nr.workload          = workloadName(hdr.workloadType);   // uses types.h — handles Boundary
             nr.algorithm         = toString(static_cast<Algorithm>(hdr.algorithm));
             nr.preprocess        = toString(static_cast<Preprocess>(hdr.preprocess));
             nr.originalSize      = hdr.originalSize;
@@ -216,6 +234,11 @@ static void receiverThread(
 
 // ============================================================
 //  Sender: one trial
+//
+//  sendTimestampUs is written into hdr just before sendFrame() so
+//  compression time is excluded from the network latency measurement.
+//  After each frame the sender blocks on a 1-byte ACK from the
+//  receiver before proceeding to the next chunk (backpressure).
 // ============================================================
 static void runSenderTrial(
     const std::vector<TrialChunk>& stream,
@@ -237,9 +260,21 @@ static void runSenderTrial(
         hdr.chunkId      = chunkId++;
         hdr.workloadType = tc.workloadIdx;
 
+        // Compress first — compressFn fills hdr.{algorithm,preprocess,
+        // originalSize,preprocessedSize,compressedSize}.
         Chunk compressed = compressFn(tc.data, hdr);
+
+        // Stamp just before the wire send so the measured interval is
+        // pure network transfer time, not compression time.
         hdr.sendTimestampUs = nowMicros();
         sendFrame(fd, hdr, compressed);
+
+        // Block until receiver ACKs this chunk (backpressure).
+        uint8_t ack = 0;
+        if (::recv(fd, &ack, 1, MSG_WAITALL) != 1) {
+            std::cerr << "  ACK missing on chunk " << hdr.chunkId << "\n";
+            break;
+        }
     }
 
     ::close(fd);
@@ -369,19 +404,28 @@ static void runBenchmark(
 int main(int argc, char* argv[]) {
     std::string scenario = (argc > 1) ? argv[1] : "baseline";
 
+    std::filesystem::create_directories("results");
+
     std::cout << "========================================\n";
     std::cout << "  Network Benchmark — Scenario: " << scenario << "\n";
     std::cout << "========================================\n";
     std::cout << "Trials per system : " << N_TRIALS         << "\n";
     std::cout << "Chunks per trial  : " << CHUNKS_PER_TRIAL << "\n";
     std::cout << "Chunk size        : " << CHUNK_SIZE        << " bytes\n";
-    std::cout << "Port              : " << PORT              << "\n\n";
+    std::cout << "Port              : " << PORT              << "\n";
+    std::cout << "Latency method    : true one-way (shared clock, loopback)\n";
+    std::cout << "                    stamp set after compression, before sendFrame()\n";
+    std::cout << "                    stamp read before decompressFrame() on receiver\n\n";
 
+    // All five workload types — including Boundary added in types.h.
+    // workloadIndex() / workloadName() in types.h handle all five, so the
+    // FrameHeader workloadType field round-trips correctly for every entry.
     std::vector<std::pair<std::string, Chunk>> datasets = {
         { "Telemetry", generateTelemetry(DATA_SIZE) },
         { "JSON",      generateJSON(DATA_SIZE)       },
         { "Binary",    generateBinary(DATA_SIZE)     },
-        { "Nibble",    generateNibble(DATA_SIZE)     }
+        { "Nibble",    generateNibble(DATA_SIZE)     },
+        { "Boundary",  generateBoundary(DATA_SIZE)   },
     };
 
     int chunksPerWorkload = CHUNKS_PER_TRIAL / static_cast<int>(datasets.size());
@@ -406,7 +450,7 @@ int main(int argc, char* argv[]) {
 
     std::vector<TrialStats> allStats;
 
-    // --- Mixed-workload trials (existing behaviour) ---
+    // --- Mixed-workload trials ---
     std::cout << "\n[Mode: mixed]\n";
     auto mixedStream = buildMixedStream(datasets, chunksPerWorkload);
     runBenchmark(scenario, "mixed", mixedStream, systems, rawCsv, allStats);

@@ -27,7 +27,7 @@ struct Pipeline::Impl {
     bool                      done = false;
     std::thread               consumerThread;
     std::vector<ChunkResult>  results;
-    std::mutex                resultsMutex;   
+    std::mutex                resultsMutex;
 
     explicit Impl(EngineConfig c) : cfg(c) {}
 
@@ -171,6 +171,10 @@ RunMetrics aggregateResults(
         sumRatio     += r.compressionRatio;
         sumLatency   += r.latencyMs;
         sumCpuTime   += r.cpuTimeMs;
+        // ru_maxrss is a process-wide high-water mark that only ever
+        // increases. Taking max() across chunks therefore yields the
+        // final (highest) RSS observed during the run, which is the
+        // most meaningful single summary value.
         peakRss       = std::max(peakRss, r.peakRssKb);
         totalOriginal   += r.originalSize;
         totalCompressed += r.compressedSize;
@@ -220,14 +224,28 @@ void saveResultsCSV(
     if (!f.is_open())
         throw std::runtime_error("Cannot open CSV file: " + filepath);
 
-    f << "workload,original_bytes,compressed_bytes,"
+    f << "workload,original_bytes,preprocessed_bytes,compressed_bytes,"
          "compression_ratio,latency_ms,"
          "entropy,smoothness,algorithm,preprocess,"
          "cpu_time_ms,peak_rss_kb\n";
 
     for (const auto& r : results) {
+        // preprocessed_size is not stored directly on ChunkResult (the
+        // pipeline discards the intermediate buffer after compression).
+        // We reconstruct it: if no preprocess was applied it equals
+        // originalSize; for DELTA it is the same size; for BITPACK it
+        // is originalSize/2. We write 0 when the exact value is unknown
+        // rather than silently emitting a wrong number.
+        size_t preprocessedSize = 0;
+        switch (r.decision.preprocess) {
+            case Preprocess::NONE:    preprocessedSize = r.originalSize;    break;
+            case Preprocess::DELTA:   preprocessedSize = r.originalSize;    break;
+            case Preprocess::BITPACK: preprocessedSize = r.originalSize / 2; break;
+        }
+
         f << r.workloadType          << ","
           << r.originalSize          << ","
+          << preprocessedSize        << ","
           << r.compressedSize        << ","
           << r.compressionRatio      << ","
           << r.latencyMs             << ","

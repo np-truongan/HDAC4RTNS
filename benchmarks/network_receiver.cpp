@@ -7,12 +7,19 @@
 //   macOS         : fully supported
 //   Windows native: NOT supported — use WSL2 instead
 //
-// Protocol: after each frame is received and decompressed, sends a 1-byte ACK
-// back to the sender. This enables RTT/2 latency measurement on the sender side
-// without requiring clock synchronisation between machines.
+// Protocol: after each frame is received and decompressed, a 1-byte ACK is
+// sent back to the sender. This creates per-chunk backpressure (preventing
+// silent chunk loss) and enables RTT/2 latency measurement on the sender
+// side without requiring clock synchronisation between machines.
 //
-// The receiver writes its own CSV recording compression ratios and chunk counts,
-// which can be cross-checked against the sender's CSV.
+// System identification: the sender writes a systemId byte into FrameHeader
+// (via hdr.systemId) so the receiver can group connections correctly even
+// when Adaptive picks different algorithms on different chunks. This avoids
+// the previous bug where the first chunk's algorithm was used as the system
+// label, causing Adaptive trials to be mis-bucketed across multiple CSV files.
+//
+// The receiver writes one CSV per system, cross-checkable against the
+// sender's CSV.
 
 #if defined(_WIN32) && !defined(__CYGWIN__)
     #error "Run this under WSL2 on Windows. Native Winsock is not supported."
@@ -34,28 +41,18 @@
 #include <vector>
 #include <map>
 #include <filesystem>
-#include <ctime>
 
 static constexpr int DEFAULT_PORT = 54321;
 
 // ============================================================
-//  Helpers
+//  Helpers — use types.h inline helpers so all five workload
+//  types (including Boundary, index 4) are handled consistently.
 // ============================================================
 static std::string algoName(uint8_t algo) {
     switch (static_cast<Algorithm>(algo)) {
         case Algorithm::LZ4:  return "LZ4";
         case Algorithm::ZSTD: return "ZSTD";
         case Algorithm::GZIP: return "Gzip";
-        default: return "Unknown";
-    }
-}
-
-static std::string workloadName(uint8_t idx) {
-    switch (idx) {
-        case 0: return "Telemetry";
-        case 1: return "JSON";
-        case 2: return "Binary";
-        case 3: return "Nibble";
         default: return "Unknown";
     }
 }
@@ -89,12 +86,6 @@ struct ChunkRecord {
     uint32_t    originalBytes;
     uint32_t    compressedBytes;
 };
-
-// ============================================================
-//  Derive system name from algorithm seen in first chunk
-//  (receiver doesn't know which system the sender is using,
-//   so we infer from algo field and group by connection)
-// ============================================================
 
 // ============================================================
 //  Main
@@ -132,11 +123,12 @@ int main(int argc, char* argv[]) {
     std::cout << "Output directory: " << outDir << "\n";
     std::cout << "Ctrl+C to stop after all trials complete.\n\n";
 
-    // Each system runs N_TRIALS connections. We accumulate records across
-    // all connections and detect system changes by watching algo patterns.
-    // Simpler: use a connection counter as trial index, group by algo.
-
-    // Map: algo_name -> records for that system
+    // System name is read from FrameHeader::systemId (set by the sender),
+    // not inferred from the first chunk's algorithm. This correctly groups
+    // Adaptive connections even though Adaptive uses varying algorithms
+    // across chunks.
+    //
+    // Map: system_name -> records for that system
     std::map<std::string, std::vector<ChunkRecord>> systemRecords;
     std::map<std::string, int> trialCounters; // per system
 
@@ -147,8 +139,25 @@ int main(int argc, char* argv[]) {
         if (connFd < 0) break;
         ++connectionCount;
 
-        std::string currentSystem = "";
-        int         chunkCount    = 0;
+        // Read the system-name handshake: 1-byte length followed by the name.
+        // The sender sends this once per connection before the first frame.
+        uint8_t nameLen = 0;
+        if (::recv(connFd, &nameLen, 1, MSG_WAITALL) != 1 || nameLen == 0) {
+            std::cerr << "  [conn " << connectionCount
+                      << "] bad handshake, skipping\n";
+            CLOSE_SOCKET(connFd);
+            continue;
+        }
+        std::string currentSystem(nameLen, '\0');
+        if (::recv(connFd, currentSystem.data(), nameLen, MSG_WAITALL)
+                != static_cast<ssize_t>(nameLen)) {
+            std::cerr << "  [conn " << connectionCount
+                      << "] truncated system name, skipping\n";
+            CLOSE_SOCKET(connFd);
+            continue;
+        }
+
+        int chunkCount = 0;
         std::vector<ChunkRecord> trialChunks;
 
         while (true) {
@@ -156,39 +165,32 @@ int main(int argc, char* argv[]) {
             Chunk payload;
             if (!recvFrame(connFd, hdr, payload)) break;
 
-            // Send 1-byte ACK immediately after receiving frame
-            // This is what enables RTT/2 measurement on the sender
+            // Send 1-byte ACK immediately so the sender can measure RTT and
+            // so no chunks are silently dropped (backpressure).
             uint8_t ack = 0x01;
             ::send(connFd, &ack, 1, 0);
 
-            // Decompress to verify correctness (result discarded)
+            // Decompress to verify correctness (result discarded).
             Chunk original = decompressFrame(hdr, payload);
             (void)original;
 
-            std::string aName = algoName(hdr.algorithm);
             double ratio = static_cast<double>(hdr.compressedSize) /
                            static_cast<double>(hdr.originalSize);
 
             trialChunks.push_back({
                 0, // trial filled in below
                 hdr.chunkId,
-                workloadName(hdr.workloadType),
-                aName,
+                workloadName(hdr.workloadType),  // types.h — handles Boundary (index 4)
+                algoName(hdr.algorithm),
                 ratio,
                 hdr.originalSize,
                 hdr.compressedSize
             });
 
-            // Track which system this connection belongs to
-            // (first chunk's algo determines the system label)
-            if (currentSystem.empty()) {
-                currentSystem = aName;
-            }
-
             ++chunkCount;
         }
 
-        // Assign trial number and store
+        // Assign trial number and store under the correct system name.
         if (!trialChunks.empty()) {
             int& trialNum = trialCounters[currentSystem];
             ++trialNum;
@@ -206,7 +208,7 @@ int main(int argc, char* argv[]) {
         CLOSE_SOCKET(connFd);
     }
 
-    // Write one CSV per system
+    // Write one CSV per system.
     std::cout << "\nWriting CSVs...\n";
     for (const auto& [systemName, records] : systemRecords) {
         std::string filename = outDir + "/receiver_" + systemName + ".csv";
@@ -217,13 +219,13 @@ int main(int argc, char* argv[]) {
         }
         f << "trial,chunk_id,workload,system,algo,ratio,original_bytes,compressed_bytes\n";
         for (const auto& r : records) {
-            f << r.trial          << ","
-              << r.chunkId        << ","
-              << r.workload       << ","
-              << systemName       << ","
-              << r.algo           << ","
-              << r.ratio          << ","
-              << r.originalBytes  << ","
+            f << r.trial           << ","
+              << r.chunkId         << ","
+              << r.workload        << ","
+              << systemName        << ","
+              << r.algo            << ","
+              << r.ratio           << ","
+              << r.originalBytes   << ","
               << r.compressedBytes << "\n";
         }
         std::cout << "  -> wrote " << filename

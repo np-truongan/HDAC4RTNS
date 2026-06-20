@@ -8,8 +8,9 @@
 //   Windows native: NOT supported — use WSL2 instead
 //
 // Latency measurement: RTT/2 approximation.
-//   Sender records T_send before sendFrame(), waits for 1-byte ACK,
-//   records T_recv, then e2e_ms = (T_recv - T_send) / 2000.0.
+//   Sender records T_send just before sendFrame() (after compression),
+//   waits for 1-byte ACK from receiver, records T_recv after ACK arrives,
+//   then e2e_ms = (T_recv - T_send) / 2000.0.
 //   This avoids clock-sync issues between two machines entirely.
 //   Document in thesis as "RTT/2 one-way latency approximation."
 
@@ -49,24 +50,11 @@ static constexpr int    CHUNKS_PER_TRIAL = 40;
 static std::string g_receiverIP;
 
 // ============================================================
-//  Workload index helper
+//  Workload helpers — delegate to types.h so all five workload
+//  types (including Boundary, index 4) are handled consistently.
 // ============================================================
 static uint8_t workloadIdx(const std::string& name) {
-    if (name == "Telemetry") return 0;
-    if (name == "JSON")      return 1;
-    if (name == "Binary")    return 2;
-    if (name == "Nibble")    return 3;
-    return 255;
-}
-
-static std::string workloadName(uint8_t idx) {
-    switch (idx) {
-        case 0: return "Telemetry";
-        case 1: return "JSON";
-        case 2: return "Binary";
-        case 3: return "Nibble";
-        default: return "Unknown";
-    }
+    return workloadIndex(name);   // types.h — handles Boundary
 }
 
 static std::string algoName(uint8_t algo) {
@@ -99,10 +87,11 @@ static Chunk compressStatic(const Chunk& chunk, Algorithm algo,
         case Algorithm::ZSTD: compressed = compressZSTD(processed); break;
         case Algorithm::GZIP: compressed = compressGZIP(processed); break;
     }
-    hdr.algorithm      = static_cast<uint8_t>(algo);
-    hdr.preprocess     = static_cast<uint8_t>(prep);
-    hdr.originalSize   = static_cast<uint32_t>(chunk.size());
-    hdr.compressedSize = static_cast<uint32_t>(compressed.size());
+    hdr.algorithm        = static_cast<uint8_t>(algo);
+    hdr.preprocess       = static_cast<uint8_t>(prep);
+    hdr.originalSize     = static_cast<uint32_t>(chunk.size());
+    hdr.preprocessedSize = static_cast<uint32_t>(processed.size());
+    hdr.compressedSize   = static_cast<uint32_t>(compressed.size());
     return compressed;
 }
 
@@ -155,6 +144,7 @@ static std::vector<TrialChunk> buildMixedStream(
 // ============================================================
 static bool runTrial(
     int trial,
+    const std::string& systemName,
     const std::vector<TrialChunk>& stream,
     std::function<Chunk(const Chunk&, FrameHeader&)> compressFn,
     std::vector<ChunkRecord>& out)
@@ -175,6 +165,15 @@ static bool runTrial(
         return false;
     }
 
+    // Send system-name handshake: 1-byte length + name bytes.
+    // The receiver uses this to group connections by system rather than
+    // inferring from the first chunk's algorithm (which breaks for Adaptive).
+    {
+        uint8_t nameLen = static_cast<uint8_t>(systemName.size());
+        ::send(fd, &nameLen, 1, 0);
+        ::send(fd, systemName.data(), nameLen, 0);
+    }
+
     uint32_t chunkId = 0;
     for (const auto& tc : stream) {
         FrameHeader hdr;
@@ -182,15 +181,17 @@ static bool runTrial(
         hdr.chunkId      = chunkId;
         hdr.workloadType = tc.workloadIdx;
 
+        // Compress before stamping so compression time is excluded from
+        // the RTT measurement (we're measuring network transfer only).
         Chunk compressed = compressFn(tc.data, hdr);
         double ratio     = static_cast<double>(hdr.compressedSize) /
                            static_cast<double>(hdr.originalSize);
 
-        // RTT/2 latency: stamp just before send, read ACK, stamp after
+        // Stamp just before the wire send.
         hdr.sendTimestampUs = nowMicros();
         sendFrame(fd, hdr, compressed);
 
-        // Wait for 1-byte ACK from receiver
+        // Wait for 1-byte ACK from receiver (backpressure + RTT close).
         uint8_t ack = 0;
         if (::recv(fd, &ack, 1, MSG_WAITALL) != 1) {
             std::cerr << "  ACK missing on chunk " << chunkId << "\n";
@@ -261,7 +262,6 @@ int main(int argc, char* argv[]) {
     std::string scenario = (argc > 2) ? argv[2] : "baseline";
     std::string outDir   = (argc > 3) ? argv[3] : "./results";
 
-    // Create output directory if it doesn't exist
     std::filesystem::create_directories(outDir);
 
     std::cout << "==============================\n";
@@ -277,11 +277,14 @@ int main(int argc, char* argv[]) {
     // For moderate/constrained scenarios on macOS, use dnctl + pfctl instead
     // of tc netem. See comments in README for exact commands.
 
+    // All five workload types — Boundary (index 4) added alongside the
+    // existing four. workloadIndex() in types.h handles the mapping.
     std::vector<std::pair<std::string, Chunk>> datasets = {
         { "Telemetry", generateTelemetry(DATA_SIZE) },
         { "JSON",      generateJSON(DATA_SIZE)       },
         { "Binary",    generateBinary(DATA_SIZE)     },
-        { "Nibble",    generateNibble(DATA_SIZE)     }
+        { "Nibble",    generateNibble(DATA_SIZE)     },
+        { "Boundary",  generateBoundary(DATA_SIZE)   },
     };
 
     int chunksPerWorkload = CHUNKS_PER_TRIAL / static_cast<int>(datasets.size());
@@ -306,7 +309,7 @@ int main(int argc, char* argv[]) {
         int failed = 0;
         for (int t = 0; t < N_TRIALS; ++t) {
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
-            if (!runTrial(t + 1, stream, fn, records)) ++failed;
+            if (!runTrial(t + 1, name, stream, fn, records)) ++failed;
         }
 
         if (failed > 0)

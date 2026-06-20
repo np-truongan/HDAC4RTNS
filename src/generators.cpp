@@ -67,3 +67,9 @@ Chunk generateBoundaryTelemetry(size_t size, unsigned seed, float noise_scale) {
     }
     return out;
 }
+
+Chunk generateBoundary(size_t size) {
+    // Use default seed and a moderate noise scale (0.5) to create a mixed pattern.
+    // Adjust these values if your thesis requires a specific "boundary" definition.
+    return generateBoundaryTelemetry(size, 42, 0.5f);
+}

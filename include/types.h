@@ -61,22 +61,36 @@ struct RunMetrics {
     double totalOriginalMB     = 0.0;
     double totalCompressedMB   = 0.0;
     double avgCpuTimeMs        = 0.0;  // average CPU time per chunk across the run
-    long   peakRssKb           = 0;    // highest peak RSS observed across all chunks
-                                        // in this run (max of all ChunkResult::peakRssKb)
+    long   peakRssKb           = 0;    // max of ChunkResult::peakRssKb across the run.
+                                        // Because ru_maxrss is a monotonically increasing
+                                        // process-wide high-water mark, this equals the
+                                        // RSS observed after the last chunk processed —
+                                        // i.e. the true peak for the run.
     std::string systemName;
 };
 
+// FrameHeader is sent on the wire before each compressed payload.
+//
+// systemId encodes which compression system produced this frame so the
+// receiver can group connections correctly. The sender fills this field
+// once per connection (or per chunk) before calling sendFrame(). Values:
+//   0 = LZ4, 1 = ZSTD, 2 = Gzip, 3 = Adaptive
+// The receiver uses the per-connection handshake (system name string) as
+// the primary grouping key; systemId is a secondary convenience field.
+//
+// Total size: 4+4+4+4+4+1+1+1+1+1+1 + 2 pad + 8 = 36 bytes.
 struct FrameHeader {
-    uint32_t magic           = 0xADC0DE42;
-    uint32_t chunkId         = 0;
-    uint32_t originalSize    = 0;
+    uint32_t magic            = 0xADC0DE42;
+    uint32_t chunkId          = 0;
+    uint32_t originalSize     = 0;
     uint32_t preprocessedSize = 0;
-    uint32_t compressedSize  = 0;
-    uint8_t  algorithm       = 0;
-    uint8_t  preprocess      = 0;
-    uint8_t  workloadType    = 0;
-    uint8_t  _pad            = 0;
-    uint64_t sendTimestampUs = 0;
+    uint32_t compressedSize   = 0;
+    uint8_t  algorithm        = 0;
+    uint8_t  preprocess       = 0;
+    uint8_t  workloadType     = 0;
+    uint8_t  systemId         = 0;   // which compression system sent this frame
+    uint8_t  _pad[2]          = {};  // explicit padding to keep 64-bit alignment
+    uint64_t sendTimestampUs  = 0;
 };
 
 inline std::string workloadName(uint8_t idx) {
