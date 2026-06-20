@@ -1,5 +1,3 @@
-
-
 #include "pipeline.h"
 #include "generators.h"
 #include "types.h"
@@ -23,9 +21,8 @@ void producerThread(
     Pipeline&   pipeline,
     size_t      totalChunks,
     size_t      chunkSize,
-    int         interArrivalMs)   
+    int         interArrivalMs)
 {
-
     const size_t dataSize = totalChunks * chunkSize;
     Chunk telemetry = generateTelemetry(dataSize);
     Chunk json      = generateJSON(dataSize);
@@ -54,9 +51,6 @@ void producerThread(
     }
 }
 
-// ============================================================
-//  Latency percentile calculation
-// ============================================================
 struct Percentiles {
     double p50, p95, p99, min, max;
 };
@@ -73,9 +67,6 @@ Percentiles computePercentiles(std::vector<double> latencies) {
     };
 }
 
-// ============================================================
-//  Per-workload latency breakdown
-// ============================================================
 void printLatencyBreakdown(const std::vector<ChunkResult>& results) {
     std::map<std::string, std::vector<double>> latByType;
     for (const auto& r : results)
@@ -114,12 +105,6 @@ void printLatencyBreakdown(const std::vector<ChunkResult>& results) {
     std::cout << "(all values in ms)\n";
 }
 
-// ============================================================
-//  Runtime stability check
-//
-//  A spike is defined as any chunk whose latency exceeds
-//  mean + 3*stdev. In a stable pipeline this should be rare.
-// ============================================================
 void checkStability(const std::vector<ChunkResult>& results) {
     std::vector<double> lats;
     for (const auto& r : results) lats.push_back(r.latencyMs);
@@ -161,13 +146,6 @@ void checkStability(const std::vector<ChunkResult>& results) {
     }
 }
 
-// ============================================================
-//  Strategy switching continuity check
-//
-//  Verifies that every strategy transition (e.g. ZSTD+Delta
-//  -> LZ4) in the result sequence has no processing gap —
-//  i.e. no chunk was dropped or reordered at a boundary.
-// ============================================================
 void checkSwitchingContinuity(const std::vector<ChunkResult>& results) {
     int transitions = 0;
     for (size_t i = 1; i < results.size(); ++i) {
@@ -184,13 +162,10 @@ void checkSwitchingContinuity(const std::vector<ChunkResult>& results) {
     std::cout << "  All chunks present (no drops): [OK]\n";
 }
 
-// ============================================================
-//  Main
-// ============================================================
 int main() {
-    const size_t TOTAL_CHUNKS    = 120;   // 30 per workload × 4
+    const size_t TOTAL_CHUNKS    = 120;
     const size_t CHUNK_SIZE      = 4096;
-    const int    INTER_ARRIVAL   = 2;     // ms between pushes (producer pacing)
+    const int    INTER_ARRIVAL   = 2;
 
     EngineConfig cfg;
 
@@ -202,10 +177,6 @@ int main() {
     std::cout << "Inter-arrival    : " << INTER_ARRIVAL << " ms  (producer pacing)\n";
     std::cout << "Workload pattern : Telemetry/JSON/Binary/Nibble rotating\n";
 
-    // --------------------------------------------------------
-    //  Start pipeline THEN launch producer thread —
-    //  genuine concurrent producer/consumer for the first time
-    // --------------------------------------------------------
     Pipeline pipeline(cfg);
     pipeline.start();
 
@@ -220,8 +191,8 @@ int main() {
         CHUNK_SIZE,
         INTER_ARRIVAL);
 
-    producer.join();           // wait for all chunks to be pushed
-    pipeline.finish();         // signal consumer to drain and stop
+    producer.join();
+    pipeline.finish();
 
     double wallMs = std::chrono::duration<double, std::milli>(
         Clock::now() - wallStart).count();
@@ -231,31 +202,14 @@ int main() {
     std::cout << "[Done] " << results.size() << " chunks processed in "
               << std::fixed << std::setprecision(1) << wallMs << " ms wall time.\n";
 
-    // --------------------------------------------------------
-    //  Latency percentile breakdown
-    // --------------------------------------------------------
     printLatencyBreakdown(results);
-
-    // --------------------------------------------------------
-    //  Runtime stability check
-    // --------------------------------------------------------
     checkStability(results);
-
-    // --------------------------------------------------------
-    //  Strategy switching continuity
-    // --------------------------------------------------------
     checkSwitchingContinuity(results);
 
-    // --------------------------------------------------------
-    //  Aggregate metrics
-    // --------------------------------------------------------
     std::cout << "\n--- Aggregate Pipeline Metrics ---\n";
     RunMetrics m = pipeline.computeMetrics("Adaptive Pipeline");
     printRunMetrics(m);
 
-    // --------------------------------------------------------
-    //  Save CSV
-    // --------------------------------------------------------
     saveResultsCSV(results, "results/streaming_stability.csv");
     std::cout << "\nFull results saved to results/streaming_stability.csv\n";
 

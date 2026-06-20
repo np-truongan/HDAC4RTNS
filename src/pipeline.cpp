@@ -16,9 +16,6 @@
 #include <iomanip>
 #include <stdexcept>
 
-// ============================================================
-//  Internal implementation (Pimpl idiom keeps the header clean)
-// ============================================================
 struct Pipeline::Impl {
     EngineConfig              cfg;
     std::queue<StreamItem>    queue;
@@ -31,11 +28,6 @@ struct Pipeline::Impl {
 
     explicit Impl(EngineConfig c) : cfg(c) {}
 
-    // --------------------------------------------------------
-    //  Apply preprocessing + compression and return the result.
-    //  This is the only place in the entire codebase where real
-    //  compressors are called — no mocks, no stubs.
-    // --------------------------------------------------------
     ChunkResult processChunk(const StreamItem& item) {
         ChunkResult result;
         result.originalSize  = item.data.size();
@@ -46,14 +38,11 @@ struct Pipeline::Impl {
         ResourceSnapshot rBefore = captureResourceSnapshot();
         auto t0 = std::chrono::high_resolution_clock::now();
 
-        // -- Preprocessing --
         Chunk processed = item.data;
 
         if (result.decision.preprocess == Preprocess::DELTA) {
             processed = deltaEncode(processed);
         } else if (result.decision.preprocess == Preprocess::BITPACK) {
-            // Bit-packing only valid when values fit in [0,15].
-            // Check the invariant; fall back to no preprocessing if violated.
             bool eligible = true;
             for (Byte b : processed) {
                 if (b > 15) { eligible = false; break; }
@@ -64,7 +53,6 @@ struct Pipeline::Impl {
                 result.decision.preprocess = Preprocess::NONE;
         }
 
-        // -- Compression --
         Chunk compressed;
         switch (result.decision.algorithm) {
             case Algorithm::LZ4:  compressed = compressLZ4(processed);  break;
@@ -114,9 +102,6 @@ struct Pipeline::Impl {
     }
 };
 
-// ============================================================
-//  Pipeline public interface
-// ============================================================
 Pipeline::Pipeline(EngineConfig cfg) : impl(new Impl(cfg)) {}
 Pipeline::~Pipeline() { delete impl; }
 
@@ -151,9 +136,6 @@ RunMetrics Pipeline::computeMetrics(const std::string& systemName) const {
     return aggregateResults(impl->results, systemName);
 }
 
-// ============================================================
-//  Metrics helpers
-// ============================================================
 RunMetrics aggregateResults(
     const std::vector<ChunkResult>& results,
     const std::string& systemName)
@@ -171,10 +153,6 @@ RunMetrics aggregateResults(
         sumRatio     += r.compressionRatio;
         sumLatency   += r.latencyMs;
         sumCpuTime   += r.cpuTimeMs;
-        // ru_maxrss is a process-wide high-water mark that only ever
-        // increases. Taking max() across chunks therefore yields the
-        // final (highest) RSS observed during the run, which is the
-        // most meaningful single summary value.
         peakRss       = std::max(peakRss, r.peakRssKb);
         totalOriginal   += r.originalSize;
         totalCompressed += r.compressedSize;
@@ -194,7 +172,6 @@ RunMetrics aggregateResults(
     m.totalOriginalMB     = totalOriginal / (1024.0 * 1024.0);
     m.totalCompressedMB   = totalCompressed / (1024.0 * 1024.0);
 
-    // Jitter = std-dev of latencies
     double variance = 0;
     for (const auto& r : results)
         variance += std::pow(r.latencyMs - m.avgLatencyMs, 2);
@@ -230,12 +207,6 @@ void saveResultsCSV(
          "cpu_time_ms,peak_rss_kb\n";
 
     for (const auto& r : results) {
-        // preprocessed_size is not stored directly on ChunkResult (the
-        // pipeline discards the intermediate buffer after compression).
-        // We reconstruct it: if no preprocess was applied it equals
-        // originalSize; for DELTA it is the same size; for BITPACK it
-        // is originalSize/2. We write 0 when the exact value is unknown
-        // rather than silently emitting a wrong number.
         size_t preprocessedSize = 0;
         switch (r.decision.preprocess) {
             case Preprocess::NONE:    preprocessedSize = r.originalSize;    break;

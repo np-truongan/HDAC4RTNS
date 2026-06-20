@@ -1,19 +1,8 @@
-// benchmarks/benchmark_routing_validation.cpp
-//
-// Decision engine routing validation across all workload types.
-//
-//     Telemetry, JSON, Binary
-// Output: results/routing_validation.csv
-//
-// No src/ changes — the engine, heuristics, and strategies
-// are already complete. This benchmark exercises all three
-// code paths for the first time simultaneously.
-// ============================================================
-
 #include "generators.h"
 #include "heuristics.h"
 #include "strategies.h"
 #include "engine.h"
+#include "resource_stats.h"
 #include "types.h"
 
 #include <iostream>
@@ -28,9 +17,6 @@
 
 using Clock = std::chrono::high_resolution_clock;
 
-// ============================================================
-//  Per-chunk record
-// ============================================================
 struct ChunkLog {
     size_t      index;
     std::string dataset;
@@ -42,11 +28,10 @@ struct ChunkLog {
     size_t      compressedSize;
     double      ratio;
     double      latencyMs;
+    double      cpuMs;
+    long        peakRssKb;
 };
 
-// ============================================================
-//  Run adaptive pipeline on one dataset, return per-chunk log
-// ============================================================
 std::vector<ChunkLog> runAdaptive(
     const Chunk&       data,
     const std::string& datasetName,
@@ -64,44 +49,36 @@ std::vector<ChunkLog> runAdaptive(
         Features f = extractFeatures(chunk);
         Decision d = decide(f, cfg);
 
-        auto t0 = Clock::now();
+        auto meas = measureCompression([&]() {
+            Chunk processed = chunk;
+            if (d.preprocess == Preprocess::DELTA)
+                processed = deltaEncode(chunk);
 
-        Chunk processed = chunk;
-        if (d.preprocess == Preprocess::DELTA)
-            processed = deltaEncode(chunk);
-        // BitPack: not applicable to this workload
+            switch (d.algorithm) {
+                case Algorithm::LZ4:  return compressLZ4(processed);
+                case Algorithm::ZSTD: return compressZSTD(processed);
+                case Algorithm::GZIP: return compressGZIP(processed);
+            }
+            return Chunk{};
+        });
 
-        Chunk compressed;
-        switch (d.algorithm) {
-            case Algorithm::LZ4:  compressed = compressLZ4(processed);  break;
-            case Algorithm::ZSTD: compressed = compressZSTD(processed); break;
-            case Algorithm::GZIP: compressed = compressGZIP(processed); break;
-        }
-
-        auto t1 = Clock::now();
-        double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+        if (meas.compressed.empty()) continue;
 
         log.push_back({
-            idx++, datasetName,
+            idx++,
+            datasetName,
             f.entropy, f.smoothness,
             toString(d.algorithm), toString(d.preprocess),
-            len, compressed.size(),
-            static_cast<double>(compressed.size()) / len,
-            ms
+            len, meas.compressed.size(),
+            static_cast<double>(meas.compressed.size()) / len,
+            meas.wallMs,
+            meas.cpuMs,
+            meas.peakRssKb
         });
     }
 
     return log;
 }
-
-// ============================================================
-//  Run a static algorithm on one dataset
-// ============================================================
-struct StaticResult {
-    double avgRatio;
-    double avgLatencyMs;
-    double throughputMBps;
-};
 
 StaticResult runStatic(
     const Chunk& data,
@@ -110,6 +87,8 @@ StaticResult runStatic(
 {
     size_t totalOrig = 0, totalComp = 0;
     double totalLatency = 0;
+    double totalCpu = 0;
+    long peakRss = 0;
     int count = 0;
 
     for (size_t offset = 0; offset < data.size(); offset += chunkSize) {
@@ -117,56 +96,58 @@ StaticResult runStatic(
         Chunk chunk(data.begin() + offset,
                     data.begin() + offset + len);
 
-        auto t0 = Clock::now();
-        Chunk compressed;
-        switch (algo) {
-            case Algorithm::LZ4:  compressed = compressLZ4(chunk);  break;
-            case Algorithm::ZSTD: compressed = compressZSTD(chunk); break;
-            case Algorithm::GZIP: compressed = compressGZIP(chunk); break;
-        }
-        auto t1 = Clock::now();
+        auto meas = measureCompression([&]() {
+            switch (algo) {
+                case Algorithm::LZ4:  return compressLZ4(chunk);
+                case Algorithm::ZSTD: return compressZSTD(chunk);
+                case Algorithm::GZIP: return compressGZIP(chunk);
+            }
+            return Chunk{};
+        });
+
+        if (meas.compressed.empty()) continue;
 
         totalOrig    += len;
-        totalComp    += compressed.size();
-        totalLatency += std::chrono::duration<double, std::milli>(t1 - t0).count();
+        totalComp    += meas.compressed.size();
+        totalLatency += meas.wallMs;
+        totalCpu     += meas.cpuMs;
+        peakRss       = std::max(peakRss, meas.peakRssKb);
         ++count;
     }
 
     return {
         static_cast<double>(totalComp) / totalOrig,
         totalLatency / count,
-        (totalOrig / (1024.0 * 1024.0)) / (totalLatency / 1000.0)
+        (totalOrig / (1024.0 * 1024.0)) / (totalLatency / 1000.0),
+        totalCpu / count,
+        peakRss
     };
 }
 
-// ============================================================
-//  Aggregate a chunk log
-// ============================================================
 StaticResult aggregate(const std::vector<ChunkLog>& log) {
     size_t totalOrig = 0, totalComp = 0;
     double totalLatency = 0;
+    double totalCpu = 0;
+    long peakRss = 0;
 
     for (const auto& e : log) {
         totalOrig    += e.originalSize;
         totalComp    += e.compressedSize;
         totalLatency += e.latencyMs;
+        totalCpu     += e.cpuMs;
+        if (e.peakRssKb > peakRss) peakRss = e.peakRssKb;
     }
 
     double n = static_cast<double>(log.size());
     return {
         static_cast<double>(totalComp) / totalOrig,
         totalLatency / n,
-        (totalOrig / (1024.0 * 1024.0)) / (totalLatency / 1000.0)
+        (totalOrig / (1024.0 * 1024.0)) / (totalLatency / 1000.0),
+        totalCpu / n,
+        peakRss
     };
 }
 
-// ============================================================
-//  Feature distribution report for threshold calibration
-//
-//  Feature distribution report for threshold calibration — shows the
-//  observed entropy and smoothness ranges per dataset, which
-//  justifies the chosen threshold values.
-// ============================================================
 void printFeatureDistribution(
     const std::vector<ChunkLog>& log,
     const std::string& datasetName)
@@ -196,9 +177,6 @@ void printFeatureDistribution(
               << "  max=" << std::setw(7) << *minmax_s.second << "\n";
 }
 
-// ============================================================
-//  Strategy usage summary for one dataset's log
-// ============================================================
 struct StrategyUsage {
     int lz4, zstd, delta, bitpack, none;
     int total;
@@ -217,30 +195,23 @@ StrategyUsage countStrategies(const std::vector<ChunkLog>& log) {
     return u;
 }
 
-// ============================================================
-//  Print one comparison row
-// ============================================================
 void printRow(const std::string& label, const StaticResult& r) {
     std::cout << std::left  << std::setw(20) << label
               << std::right
               << std::setw(12) << r.avgRatio
               << std::setw(16) << r.avgLatencyMs
               << std::setw(18) << r.throughputMBps
+              << std::setw(12) << r.avgCpuMs
+              << std::setw(10) << r.peakRssKb
               << "\n";
 }
 
-// ============================================================
-//  Main
-// ============================================================
 int main() {
-    const size_t DATA_SIZE  = 1 << 20;   // 1 MB
-    const size_t CHUNK_SIZE = 4096;       // 4 KB
+    const size_t DATA_SIZE  = 1 << 20;
+    const size_t CHUNK_SIZE = 4096;
 
-    EngineConfig cfg;   // default calibrated thresholds
+    EngineConfig cfg;
 
-    // --------------------------------------------------------
-    //  Generate all three datasets
-    // --------------------------------------------------------
     std::vector<std::pair<std::string, Chunk>> datasets = {
         { "Telemetry", generateTelemetry(DATA_SIZE) },
         { "JSON",      generateJSON(DATA_SIZE)      },
@@ -259,9 +230,6 @@ int main() {
     std::cout << "             entropy  < " << cfg.bitpackThreshold
               << " → BitPack eligible\n";
 
-    // --------------------------------------------------------
-    //  Feature distribution (threshold calibration evidence)
-    // --------------------------------------------------------
     std::cout << "\n--- Heuristic Feature Distributions ---\n";
     std::cout << "(justifies threshold choices)\n\n";
 
@@ -273,14 +241,6 @@ int main() {
         allLogs.push_back(log);
     }
 
-    // --------------------------------------------------------
-    //  Strategy activation verification
-    //
-    //  Expected:
-    //    Telemetry → Delta activated (high smoothness ~0.99)
-    //    JSON      → no preprocessing (smoothness ~0.14)
-    //    Binary    → LZ4, no preprocessing (high entropy ~7.9)
-    // --------------------------------------------------------
     std::cout << "\n--- Strategy Activation Verification ---\n";
     std::cout << "(expected: Delta on Telemetry, LZ4 on Binary, ZSTD on JSON)\n\n";
 
@@ -299,7 +259,6 @@ int main() {
                   << " ZSTD="   << std::setw(6) << zstdPct  << "%"
                   << " Delta="  << std::setw(6) << deltaPct << "%";
 
-        // Verification assertions
         bool ok = true;
         if (i == 0 && u.delta == 0)  { ok = false; std::cout << "  [WARN] Delta not activating on Telemetry!"; }
         if (i == 1 && u.delta > 0)   { ok = false; std::cout << "  [WARN] Delta firing on JSON unexpectedly!"; }
@@ -313,9 +272,6 @@ int main() {
     if (allCorrect)
         std::cout << "\n  All strategy activations correct.\n";
 
-    // --------------------------------------------------------
-    //  Per-dataset comparison: Adaptive vs Static LZ4 vs ZSTD
-    // --------------------------------------------------------
     std::cout << "\n--- Per-Dataset Performance Comparison ---\n";
 
     for (int i = 0; i < 3; ++i) {
@@ -327,27 +283,26 @@ int main() {
         auto zstdResult     = runStatic(data, CHUNK_SIZE, Algorithm::ZSTD);
 
         std::cout << "\n  Dataset: " << name << "\n";
-        std::cout << "  " << std::string(64, '-') << "\n";
+        std::cout << "  " << std::string(86, '-') << "\n";
         std::cout << "  " << std::left << std::setw(20) << "System"
                   << std::right
                   << std::setw(12) << "Avg Ratio"
                   << std::setw(16) << "Avg Lat (ms)"
                   << std::setw(18) << "Throughput MB/s"
+                  << std::setw(12) << "Avg CPU (ms)"
+                  << std::setw(10) << "RSS(KB)"
                   << "\n";
-        std::cout << "  " << std::string(64, '-') << "\n";
+        std::cout << "  " << std::string(86, '-') << "\n";
 
         printRow("  Adaptive",    adaptiveResult);
         printRow("  Static LZ4",  lz4Result);
         printRow("  Static ZSTD", zstdResult);
     }
 
-    // --------------------------------------------------------
-    //  Save CSV (all three datasets combined)
-    // --------------------------------------------------------
     std::ofstream csv("results/routing_validation.csv");
     csv << "dataset,chunk_index,entropy,smoothness,"
            "algorithm,preprocess,original_bytes,"
-           "compressed_bytes,ratio,latency_ms\n";
+           "compressed_bytes,ratio,latency_ms,cpu_ms,peak_rss_kb\n";
 
     for (const auto& log : allLogs) {
         for (const auto& e : log) {
@@ -360,7 +315,9 @@ int main() {
                 << e.originalSize   << ","
                 << e.compressedSize << ","
                 << e.ratio          << ","
-                << e.latencyMs      << "\n";
+                << e.latencyMs      << ","
+                << e.cpuMs          << ","
+                << e.peakRssKb      << "\n";
         }
     }
 

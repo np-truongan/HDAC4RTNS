@@ -1,8 +1,3 @@
-// tests/test_roundtrip.cpp
-//
-// Correctness gate — must pass before any benchmark results
-// are considered valid. Covers all encode/compress paths.
-
 #include "generators.h"
 #include "strategies.h"
 #include "types.h"
@@ -26,9 +21,6 @@ static void fail(const std::string& name, const std::string& reason) {
     std::exit(1);
 }
 
-// ----------------------------------------------------------------
-// Delta round-trip
-// ----------------------------------------------------------------
 void testDeltaRoundTrip() {
     std::cout << "\n--- Delta encoding ---\n";
 
@@ -58,9 +50,6 @@ void testDeltaRoundTrip() {
     }
 }
 
-// ----------------------------------------------------------------
-// Bit-pack round-trip
-// ----------------------------------------------------------------
 void testBitPackRoundTrip() {
     std::cout << "\n--- Bit-packing encoding ---\n";
 
@@ -90,9 +79,6 @@ void testBitPackRoundTrip() {
     }
 }
 
-// ----------------------------------------------------------------
-// Compressor round-trips
-// ----------------------------------------------------------------
 void testLZ4RoundTrip() {
     std::cout << "\n--- LZ4 ---\n";
     for (auto& [name, data] : std::vector<std::pair<std::string, Chunk>>{
@@ -138,9 +124,6 @@ void testGZIPRoundTrip() {
     }
 }
 
-// ----------------------------------------------------------------
-// Combined pipeline round-trips (full adaptive paths)
-// ----------------------------------------------------------------
 void testDeltaPlusZSTD() {
     std::cout << "\n--- Delta + ZSTD (Telemetry adaptive path) ---\n";
 
@@ -171,9 +154,6 @@ void testBitPackPlusZSTD() {
     pass("BitPack+ZSTD full pipeline round-trip (4096 bytes)");
 }
 
-// ----------------------------------------------------------------
-// Main
-// ----------------------------------------------------------------
 int main() {
     std::cout << "========================================\n";
     std::cout << "  Round-Trip Correctness Tests\n";

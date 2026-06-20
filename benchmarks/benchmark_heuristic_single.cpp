@@ -1,19 +1,8 @@
-// benchmarks/benchmark_heuristic_single.cpp
-//
-// Heuristic probe validation on a single structured workload.
-//
-// Validates that the entropy and smoothness probes produce stable,
-// meaningful feature values on JSON data, and that the decision
-// engine routes all chunks consistently to the correct strategy.
-// Reports per-chunk feature values and a comparison of adaptive
-// vs static LZ4 and ZSTD on the same dataset.
-//
-// Output: results/heuristic_single_workload.csv
-
 #include "generators.h"
 #include "heuristics.h"
 #include "strategies.h"
 #include "engine.h"
+#include "resource_stats.h"
 #include "types.h"
 
 #include <iostream>
@@ -37,6 +26,8 @@ struct ChunkLog {
     size_t      compressedSize;
     double      ratio;
     double      latencyMs;
+    double      cpuMs;
+    long        peakRssKb;
 };
 
 std::vector<ChunkLog> runAdaptive(
@@ -55,39 +46,34 @@ std::vector<ChunkLog> runAdaptive(
         Features f = extractFeatures(chunk);
         Decision d = decide(f, cfg);
 
-        auto t0 = Clock::now();
+        auto meas = measureCompression([&]() {
+            Chunk processed = chunk;
+            if (d.preprocess == Preprocess::DELTA)
+                processed = deltaEncode(chunk);
 
-        Chunk processed = chunk;
-        if (d.preprocess == Preprocess::DELTA)
-            processed = deltaEncode(chunk);
+            switch (d.algorithm) {
+                case Algorithm::LZ4:  return compressLZ4(processed);
+                case Algorithm::ZSTD: return compressZSTD(processed);
+                case Algorithm::GZIP: return compressGZIP(processed);
+            }
+            return Chunk{};
+        });
 
-        Chunk compressed;
-        switch (d.algorithm) {
-            case Algorithm::LZ4:  compressed = compressLZ4(processed);  break;
-            case Algorithm::ZSTD: compressed = compressZSTD(processed); break;
-            case Algorithm::GZIP: compressed = compressGZIP(processed); break;
-        }
-
-        auto t1 = Clock::now();
-        double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+        if (meas.compressed.empty()) continue;
 
         log.push_back({
             chunkIndex++,
             f.entropy, f.smoothness,
             toString(d.algorithm), toString(d.preprocess),
-            len, compressed.size(),
-            static_cast<double>(compressed.size()) / len,
-            ms
+            len, meas.compressed.size(),
+            static_cast<double>(meas.compressed.size()) / len,
+            meas.wallMs,
+            meas.cpuMs,
+            meas.peakRssKb
         });
     }
     return log;
 }
-
-struct StaticResult {
-    double avgRatio;
-    double avgLatencyMs;
-    double throughputMBps;
-};
 
 StaticResult runStatic(
     const Chunk& data,
@@ -96,26 +82,31 @@ StaticResult runStatic(
 {
     size_t totalOriginal = 0, totalCompressed = 0;
     double totalLatency  = 0;
-    int    count         = 0;
+    double totalCpu      = 0;
+    long peakRss = 0;
+    int count = 0;
 
     for (size_t offset = 0; offset < data.size(); offset += chunkSize) {
         size_t len = std::min(chunkSize, data.size() - offset);
         Chunk chunk(data.begin() + offset,
                     data.begin() + offset + len);
 
-        auto t0 = Clock::now();
-        Chunk compressed;
-        switch (algo) {
-            case Algorithm::LZ4:  compressed = compressLZ4(chunk);  break;
-            case Algorithm::ZSTD: compressed = compressZSTD(chunk); break;
-            case Algorithm::GZIP: compressed = compressGZIP(chunk); break;
-        }
-        auto t1 = Clock::now();
-        double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+        auto meas = measureCompression([&]() {
+            switch (algo) {
+                case Algorithm::LZ4:  return compressLZ4(chunk);
+                case Algorithm::ZSTD: return compressZSTD(chunk);
+                case Algorithm::GZIP: return compressGZIP(chunk);
+            }
+            return Chunk{};
+        });
+
+        if (meas.compressed.empty()) continue;
 
         totalOriginal   += len;
-        totalCompressed += compressed.size();
-        totalLatency    += ms;
+        totalCompressed += meas.compressed.size();
+        totalLatency    += meas.wallMs;
+        totalCpu        += meas.cpuMs;
+        peakRss          = std::max(peakRss, meas.peakRssKb);
         ++count;
     }
 
@@ -123,17 +114,22 @@ StaticResult runStatic(
     double avgLatency = totalLatency / count;
     double throughput = (totalOriginal / (1024.0 * 1024.0)) /
                         (totalLatency  / 1000.0);
-    return { avgRatio, avgLatency, throughput };
+    double avgCpu = totalCpu / count;
+    return { avgRatio, avgLatency, throughput, avgCpu, peakRss };
 }
 
 StaticResult aggregate(const std::vector<ChunkLog>& log) {
     size_t totalOrig = 0, totalComp = 0;
     double totalLatency = 0;
+    double totalCpu = 0;
+    long peakRss = 0;
 
     for (const auto& e : log) {
         totalOrig    += e.originalSize;
         totalComp    += e.compressedSize;
         totalLatency += e.latencyMs;
+        totalCpu     += e.cpuMs;
+        if (e.peakRssKb > peakRss) peakRss = e.peakRssKb;
     }
 
     double n          = static_cast<double>(log.size());
@@ -141,7 +137,8 @@ StaticResult aggregate(const std::vector<ChunkLog>& log) {
     double avgLatency = totalLatency / n;
     double throughput = (totalOrig / (1024.0 * 1024.0)) /
                         (totalLatency / 1000.0);
-    return { avgRatio, avgLatency, throughput };
+    double avgCpu = totalCpu / n;
+    return { avgRatio, avgLatency, throughput, avgCpu, peakRss };
 }
 
 void printChunkLog(const std::vector<ChunkLog>& log, size_t maxRows = 10) {
@@ -153,9 +150,11 @@ void printChunkLog(const std::vector<ChunkLog>& log, size_t maxRows = 10) {
               << std::setw(8)  << "Algo"
               << std::setw(10) << "Preproc"
               << std::setw(10) << "Ratio"
-              << std::setw(12) << "Latency ms"
+              << std::setw(12) << "Lat (ms)"
+              << std::setw(12) << "CPU (ms)"
+              << std::setw(10) << "RSS(KB)"
               << "\n";
-    std::cout << std::string(68, '-') << "\n";
+    std::cout << std::string(90, '-') << "\n";
 
     size_t rows = std::min(log.size(), maxRows);
     for (size_t i = 0; i < rows; ++i) {
@@ -167,6 +166,8 @@ void printChunkLog(const std::vector<ChunkLog>& log, size_t maxRows = 10) {
                   << std::setw(10) << e.preprocess
                   << std::setw(10) << e.ratio
                   << std::setw(12) << e.latencyMs
+                  << std::setw(12) << e.cpuMs
+                  << std::setw(10) << e.peakRssKb
                   << "\n";
     }
 
@@ -232,16 +233,20 @@ int main() {
     std::cout << std::left
               << std::setw(18) << "System"
               << std::setw(14) << "Avg Ratio"
-              << std::setw(16) << "Avg Latency ms"
+              << std::setw(16) << "Avg Lat (ms)"
               << std::setw(16) << "Throughput MB/s"
+              << std::setw(12) << "Avg CPU (ms)"
+              << std::setw(10) << "RSS(KB)"
               << "\n";
-    std::cout << std::string(64, '-') << "\n";
+    std::cout << std::string(86, '-') << "\n";
 
     auto printRow = [](const std::string& name, const StaticResult& r) {
         std::cout << std::left  << std::setw(18) << name
                   << std::right << std::setw(14) << r.avgRatio
                   << std::setw(16) << r.avgLatencyMs
                   << std::setw(16) << r.throughputMBps
+                  << std::setw(12) << r.avgCpuMs
+                  << std::setw(10) << r.peakRssKb
                   << "\n";
     };
 
@@ -251,7 +256,7 @@ int main() {
 
     std::ofstream csv("results/heuristic_single_workload.csv");
     csv << "chunk_index,entropy,smoothness,algorithm,preprocess,"
-           "original_bytes,compressed_bytes,ratio,latency_ms\n";
+           "original_bytes,compressed_bytes,ratio,latency_ms,cpu_ms,peak_rss_kb\n";
 
     for (const auto& e : adaptiveLog) {
         csv << e.index          << ","
@@ -262,7 +267,9 @@ int main() {
             << e.originalSize   << ","
             << e.compressedSize << ","
             << e.ratio          << ","
-            << e.latencyMs      << "\n";
+            << e.latencyMs      << ","
+            << e.cpuMs          << ","
+            << e.peakRssKb      << "\n";
     }
 
     std::cout << "\nPer-chunk log saved to results/heuristic_single_workload.csv\n";

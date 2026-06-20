@@ -7,23 +7,21 @@
 #include <vector>
 #include <fstream>
 #include <iostream>
+#include <chrono>
+#include <functional>
 
 struct ResourceSnapshot {
     double   userTimeMs = 0.0;
     double   sysTimeMs  = 0.0;
-    long     maxRssKb   = 0;   // peak RSS at time of snapshot (cumulative since process start)
+    long     maxRssKb   = 0;
 };
 
 struct ResourceDelta {
     std::string label;
-    double      userTimeMs = 0.0;  // CPU time spent in user mode during the region
-    double      sysTimeMs  = 0.0;  // CPU time spent in kernel mode during the region
-    double      cpuTimeMs  = 0.0;  // userTimeMs + sysTimeMs
-    long        peakRssKb  = 0;    // peak RSS observed BY THE END of the region
-                                    // (NOTE: ru_maxrss is a high-water mark for the
-                                    //  whole process, not scoped to this region alone.
-                                    //  If you need a true delta, you'd need platform-specific
-                                    //  current-RSS sampling instead — see note in .cpp)
+    double      userTimeMs = 0.0;
+    double      sysTimeMs  = 0.0;
+    double      cpuTimeMs  = 0.0;
+    long        peakRssKb  = 0;
 };
 
 inline ResourceSnapshot captureResourceSnapshot() {
@@ -32,8 +30,6 @@ inline ResourceSnapshot captureResourceSnapshot() {
     if (getrusage(RUSAGE_SELF, &usage) == 0) {
         snap.userTimeMs = usage.ru_utime.tv_sec * 1000.0 + usage.ru_utime.tv_usec / 1000.0;
         snap.sysTimeMs  = usage.ru_stime.tv_sec * 1000.0 + usage.ru_stime.tv_usec / 1000.0;
-        // ru_maxrss is in KB on Linux, but in BYTES on macOS (BSD heritage quirk).
-        // Normalize to KB here so downstream code is platform-agnostic.
 #if defined(__APPLE__)
         snap.maxRssKb = usage.ru_maxrss / 1024;
 #else
@@ -53,7 +49,7 @@ inline ResourceDelta diffResourceSnapshot(
     d.userTimeMs = after.userTimeMs - before.userTimeMs;
     d.sysTimeMs  = after.sysTimeMs  - before.sysTimeMs;
     d.cpuTimeMs  = d.userTimeMs + d.sysTimeMs;
-    d.peakRssKb  = after.maxRssKb;  // high-water mark, not a true delta — see struct comment
+    d.peakRssKb  = after.maxRssKb;
     return d;
 }
 
@@ -79,4 +75,30 @@ inline void saveResourceDeltasCSV(
           << d.cpuTimeMs  << ","
           << d.peakRssKb  << "\n";
     }
+}
+
+template <typename F>
+struct CompressionMeasurement {
+    Chunk compressed;
+    double wallMs;
+    double cpuMs;
+    long   peakRssKb;
+};
+
+template <typename F>
+CompressionMeasurement<F> measureCompression(F&& compressFn) {
+    using Clock = std::chrono::high_resolution_clock;
+
+    ResourceSnapshot before = captureResourceSnapshot();
+    auto t0 = Clock::now();
+
+    Chunk compressed = compressFn();
+
+    auto t1 = Clock::now();
+    ResourceSnapshot after = captureResourceSnapshot();
+
+    double wallMs = std::chrono::duration<double, std::milli>(t1 - t0).count();
+    ResourceDelta delta = diffResourceSnapshot(before, after, "");
+
+    return { std::move(compressed), wallMs, delta.cpuTimeMs, after.maxRssKb };
 }

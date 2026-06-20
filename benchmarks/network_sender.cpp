@@ -1,34 +1,15 @@
-// network_sender.cpp — run this on your laptop
-// Usage: ./network_sender <receiver_ip> [scenario] [output_dir]
-// Example: ./network_sender 192.168.1.42 baseline ./results
-//
-// Platform support:
-//   Linux / WSL2  : fully supported
-//   macOS         : fully supported
-//   Windows native: NOT supported — use WSL2 instead
-//
-// Latency measurement: RTT/2 approximation.
-//   Sender records T_send just before sendFrame() (after compression),
-//   waits for 1-byte ACK from receiver, records T_recv after ACK arrives,
-//   then e2e_ms = (T_recv - T_send) / 2000.0.
-//   This avoids clock-sync issues between two machines entirely.
-//   Document in thesis as "RTT/2 one-way latency approximation."
-
-#if defined(_WIN32) && !defined(__CYGWIN__)
-    #error "Run this under WSL2 on Windows. Native Winsock is not supported."
-#else
-    #include <sys/socket.h>
-    #include <netinet/in.h>
-    #include <arpa/inet.h>
-    #include <unistd.h>
-    #define CLOSE_SOCKET(fd) ::close(fd)
-#endif
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <unistd.h>
+#define CLOSE_SOCKET(fd) ::close(fd)
 
 #include "generators.h"
 #include "heuristics.h"
 #include "strategies.h"
 #include "engine.h"
 #include "framing.h"
+#include "resource_stats.h"
 #include "stats.h"
 #include "types.h"
 
@@ -41,20 +22,17 @@
 #include <functional>
 #include <filesystem>
 
-static constexpr int    PORT             = 54321;
+static constexpr int    DEFAULT_PORT      = 54321;
 static constexpr size_t CHUNK_SIZE       = 4096;
 static constexpr size_t DATA_SIZE        = 1 << 20;
 static constexpr int    N_TRIALS         = 30;
 static constexpr int    CHUNKS_PER_TRIAL = 40;
 
 static std::string g_receiverIP;
+static int         g_port = DEFAULT_PORT;
 
-// ============================================================
-//  Workload helpers — delegate to types.h so all five workload
-//  types (including Boundary, index 4) are handled consistently.
-// ============================================================
 static uint8_t workloadIdx(const std::string& name) {
-    return workloadIndex(name);   // types.h — handles Boundary
+    return workloadIndex(name);
 }
 
 static std::string algoName(uint8_t algo) {
@@ -66,9 +44,6 @@ static std::string algoName(uint8_t algo) {
     }
 }
 
-// ============================================================
-//  Compression helpers
-// ============================================================
 static Chunk compressStatic(const Chunk& chunk, Algorithm algo,
                              Preprocess prep, FrameHeader& hdr)
 {
@@ -102,22 +77,18 @@ static Chunk adaptiveCompress(const Chunk& chunk, FrameHeader& hdr) {
     return compressStatic(chunk, d.algorithm, d.preprocess, hdr);
 }
 
-// ============================================================
-//  Per-chunk result (sender side)
-// ============================================================
 struct ChunkRecord {
     int         trial;
     uint32_t    chunkId;
     std::string workload;
     std::string algo;
     double      ratio;
-    double      rttMs;      // full RTT
-    double      e2eMs;      // RTT / 2
+    double      rttMs;
+    double      e2eMs;
+    double      cpuMs;
+    long        peakRssKb;
 };
 
-// ============================================================
-//  Stream builder
-// ============================================================
 struct TrialChunk { Chunk data; std::string workload; uint8_t workloadIdx; };
 
 static std::vector<TrialChunk> buildMixedStream(
@@ -139,9 +110,6 @@ static std::vector<TrialChunk> buildMixedStream(
     return stream;
 }
 
-// ============================================================
-//  Run one trial — returns per-chunk records
-// ============================================================
 static bool runTrial(
     int trial,
     const std::string& systemName,
@@ -154,7 +122,7 @@ static bool runTrial(
 
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
-    addr.sin_port   = htons(PORT);
+    addr.sin_port   = htons(static_cast<uint16_t>(g_port));
     if (::inet_pton(AF_INET, g_receiverIP.c_str(), &addr.sin_addr) <= 0) {
         CLOSE_SOCKET(fd);
         return false;
@@ -165,9 +133,6 @@ static bool runTrial(
         return false;
     }
 
-    // Send system-name handshake: 1-byte length + name bytes.
-    // The receiver uses this to group connections by system rather than
-    // inferring from the first chunk's algorithm (which breaks for Adaptive).
     {
         uint8_t nameLen = static_cast<uint8_t>(systemName.size());
         ::send(fd, &nameLen, 1, 0);
@@ -181,17 +146,21 @@ static bool runTrial(
         hdr.chunkId      = chunkId;
         hdr.workloadType = tc.workloadIdx;
 
-        // Compress before stamping so compression time is excluded from
-        // the RTT measurement (we're measuring network transfer only).
-        Chunk compressed = compressFn(tc.data, hdr);
-        double ratio     = static_cast<double>(hdr.compressedSize) /
-                           static_cast<double>(hdr.originalSize);
+        auto meas = measureCompression([&]() {
+            FrameHeader localHdr;
+            Chunk comp = compressFn(tc.data, localHdr);
+            hdr = localHdr;
+            return comp;
+        });
 
-        // Stamp just before the wire send.
+        if (meas.compressed.empty()) break;
+
+        double ratio = static_cast<double>(hdr.compressedSize) /
+                       static_cast<double>(hdr.originalSize);
+
         hdr.sendTimestampUs = nowMicros();
-        sendFrame(fd, hdr, compressed);
+        sendFrame(fd, hdr, meas.compressed);
 
-        // Wait for 1-byte ACK from receiver (backpressure + RTT close).
         uint8_t ack = 0;
         if (::recv(fd, &ack, 1, MSG_WAITALL) != 1) {
             std::cerr << "  ACK missing on chunk " << chunkId << "\n";
@@ -209,7 +178,9 @@ static bool runTrial(
             algoName(hdr.algorithm),
             ratio,
             rttMs,
-            e2eMs
+            e2eMs,
+            meas.cpuMs,
+            meas.peakRssKb
         });
 
         ++chunkId;
@@ -219,9 +190,6 @@ static bool runTrial(
     return true;
 }
 
-// ============================================================
-//  Write CSV for one system
-// ============================================================
 static void writeCSV(const std::vector<ChunkRecord>& records,
                      const std::string& systemName,
                      const std::string& scenario,
@@ -233,7 +201,7 @@ static void writeCSV(const std::vector<ChunkRecord>& records,
         std::cerr << "Cannot write: " << filename << "\n";
         return;
     }
-    f << "trial,chunk_id,workload,system,algo,ratio,rtt_ms,e2e_ms\n";
+    f << "trial,chunk_id,workload,system,algo,ratio,rtt_ms,e2e_ms,cpu_ms,peak_rss_kb\n";
     for (const auto& r : records) {
         f << r.trial     << ","
           << r.chunkId   << ","
@@ -242,43 +210,36 @@ static void writeCSV(const std::vector<ChunkRecord>& records,
           << r.algo      << ","
           << r.ratio     << ","
           << r.rttMs     << ","
-          << r.e2eMs     << "\n";
+          << r.e2eMs     << ","
+          << r.cpuMs     << ","
+          << r.peakRssKb << "\n";
     }
     std::cout << "  -> wrote " << filename
               << " (" << records.size() << " rows)\n";
 }
 
-// ============================================================
-//  Main
-// ============================================================
 int main(int argc, char* argv[]) {
     if (argc < 2) {
-        std::cerr << "Usage: ./network_sender <receiver_ip> [scenario] [output_dir]\n";
-        std::cerr << "Example: ./network_sender 192.168.1.42 baseline ./results\n";
+        std::cerr << "Usage: ./network_sender <receiver_ip> [scenario] [output_dir] [port]\n";
+        std::cerr << "Example: ./network_sender 192.168.1.42 baseline ./results 54321\n";
         return 1;
     }
 
     g_receiverIP         = argv[1];
     std::string scenario = (argc > 2) ? argv[2] : "baseline";
     std::string outDir   = (argc > 3) ? argv[3] : "./results";
+    g_port               = (argc > 4) ? std::stoi(argv[4]) : DEFAULT_PORT;
 
     std::filesystem::create_directories(outDir);
 
     std::cout << "==============================\n";
     std::cout << "  Network Sender\n";
-    std::cout << "  Receiver : " << g_receiverIP << ":" << PORT << "\n";
+    std::cout << "  Receiver : " << g_receiverIP << ":" << g_port << "\n";
     std::cout << "  Scenario : " << scenario      << "\n";
     std::cout << "  Trials   : " << N_TRIALS      << "\n";
     std::cout << "  Output   : " << outDir        << "\n";
-    std::cout << "  Latency  : RTT/2 (ACK-based, no clock sync needed)\n";
     std::cout << "==============================\n\n";
 
-    // macOS traffic shaping note:
-    // For moderate/constrained scenarios on macOS, use dnctl + pfctl instead
-    // of tc netem. See comments in README for exact commands.
-
-    // All five workload types — Boundary (index 4) added alongside the
-    // existing four. workloadIndex() in types.h handles the mapping.
     std::vector<std::pair<std::string, Chunk>> datasets = {
         { "Telemetry", generateTelemetry(DATA_SIZE) },
         { "JSON",      generateJSON(DATA_SIZE)       },

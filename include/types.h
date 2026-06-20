@@ -45,12 +45,8 @@ struct ChunkResult {
     Decision    decision;
     std::string workloadType;
     Chunk       compressedData;
-    double      cpuTimeMs        = 0.0;  // user+sys CPU time for this chunk's
-                                          // preprocessing + compression (getrusage-based)
-    long        peakRssKb        = 0;    // process peak RSS (KB) observed at the END of
-                                          // this chunk's processing. NOTE: this is a
-                                          // process-wide high-water mark, not a per-chunk
-                                          // delta — see resource_stats.h for details.
+    double      cpuTimeMs        = 0.0;
+    long        peakRssKb        = 0;
 };
 
 struct RunMetrics {
@@ -60,25 +56,11 @@ struct RunMetrics {
     double avgThroughputMBps   = 0.0;
     double totalOriginalMB     = 0.0;
     double totalCompressedMB   = 0.0;
-    double avgCpuTimeMs        = 0.0;  // average CPU time per chunk across the run
-    long   peakRssKb           = 0;    // max of ChunkResult::peakRssKb across the run.
-                                        // Because ru_maxrss is a monotonically increasing
-                                        // process-wide high-water mark, this equals the
-                                        // RSS observed after the last chunk processed —
-                                        // i.e. the true peak for the run.
+    double avgCpuTimeMs        = 0.0;
+    long   peakRssKb           = 0;
     std::string systemName;
 };
 
-// FrameHeader is sent on the wire before each compressed payload.
-//
-// systemId encodes which compression system produced this frame so the
-// receiver can group connections correctly. The sender fills this field
-// once per connection (or per chunk) before calling sendFrame(). Values:
-//   0 = LZ4, 1 = ZSTD, 2 = Gzip, 3 = Adaptive
-// The receiver uses the per-connection handshake (system name string) as
-// the primary grouping key; systemId is a secondary convenience field.
-//
-// Total size: 4+4+4+4+4+1+1+1+1+1+1 + 2 pad + 8 = 36 bytes.
 struct FrameHeader {
     uint32_t magic            = 0xADC0DE42;
     uint32_t chunkId          = 0;
@@ -88,8 +70,8 @@ struct FrameHeader {
     uint8_t  algorithm        = 0;
     uint8_t  preprocess       = 0;
     uint8_t  workloadType     = 0;
-    uint8_t  systemId         = 0;   // which compression system sent this frame
-    uint8_t  _pad[2]          = {};  // explicit padding to keep 64-bit alignment
+    uint8_t  systemId         = 0;
+    uint8_t  _pad[2]          = {};
     uint64_t sendTimestampUs  = 0;
 };
 
@@ -112,17 +94,6 @@ inline uint8_t workloadIndex(const std::string& name) {
     if (name == "Boundary")  return 4;
     return 255;
 }
-
-struct NetworkResult {
-    uint32_t    chunkId;
-    std::string workload;
-    std::string algorithm;
-    std::string preprocess;
-    size_t      originalSize;
-    size_t      compressedSize;
-    double      compressionRatio;
-    double      endToEndLatencyMs;
-};
 
 struct TrialStats {
     std::string label;
@@ -152,3 +123,50 @@ inline std::string toString(Preprocess p) {
     }
     return "UNKNOWN";
 }
+
+struct StaticResult {
+    double avgRatio;
+    double avgLatencyMs;
+    double throughputMBps;
+    double avgCpuMs;
+    long   peakRssKb;
+};
+
+struct WorkloadResult {
+    std::string system;
+    std::string workload;
+    double      avgRatio;
+    double      avgLatencyMs;
+    double      throughputMBps;
+    double      jitterMs;
+    double      avgCpuMs;
+    long        peakRssKb;
+    size_t      totalOriginal;
+    size_t      totalCompressed;
+};
+
+struct NetworkResult {
+    uint32_t    chunkId;
+    std::string workload;
+    std::string algorithm;
+    std::string preprocess;
+    size_t      originalSize;
+    size_t      compressedSize;
+    double      compressionRatio;
+    double      endToEndLatencyMs;
+    double      cpuMs;
+    long        peakRssKb;
+};
+
+struct SweepResult {
+    std::string system;
+    std::string workload;
+    size_t      chunkSize;
+    double      avgRatio;
+    double      avgLatencyMs;
+    double      throughputMBps;
+    double      latencyStdev;
+    double      avgCpuMs;
+    long        peakRssKb;
+    double      decisionConsistency;
+};

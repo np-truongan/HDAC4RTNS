@@ -3,14 +3,6 @@
 #include <cmath>
 #include <stdexcept>
 
-// ============================================================
-//  Shannon entropy over byte-frequency distribution.
-//
-//  We use a fixed 256-bucket frequency table (one pass) then
-//  compute the standard entropy formula.  This is O(n) in the
-//  chunk size with very low constant — suitable for inline use
-//  in a streaming pipeline.
-// ============================================================
 double computeEntropy(const Chunk& data) {
     if (data.empty()) return 0.0;
 
@@ -32,13 +24,6 @@ double computeEntropy(const Chunk& data) {
     return entropy;
 }
 
-// ============================================================
-//  Smoothness: proportion of adjacent pairs with |diff| <= 2.
-//
-//  Threshold of 2 is intentional — it captures byte-level
-//  sequential correlation without being too sensitive to
-//  noise in near-smooth data (e.g. slowly drifting telemetry).
-// ============================================================
 double computeSmoothness(const Chunk& data) {
     if (data.size() < 2) return 0.0;
 
@@ -52,10 +37,6 @@ double computeSmoothness(const Chunk& data) {
     return static_cast<double>(smooth) /
            static_cast<double>(data.size() - 1);
 }
-
-// ============================================================
-//  Convenience wrapper
-// ============================================================
 Features extractFeatures(const Chunk& data) {
     return {
         computeEntropy(data),

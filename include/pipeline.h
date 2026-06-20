@@ -15,9 +15,9 @@ public:
     explicit Pipeline(EngineConfig cfg = EngineConfig{});
     ~Pipeline();
 
-    void start();                       // launches consumer thread
-    void push(StreamItem item);         // thread-safe enqueue
-    void finish();                      // signals done, joins thread
+    void start();
+    void push(StreamItem item);
+    void finish();
 
     const std::vector<ChunkResult>& getResults() const;
     RunMetrics computeMetrics(const std::string& systemName) const;

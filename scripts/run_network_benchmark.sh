@@ -1,14 +1,3 @@
-#!/bin/bash
-#
-# scripts/run_network_benchmark.sh
-#
-# Runs the network benchmark under three standardized network
-# conditions using tc netem on the loopback interface.
-#
-# Must be run as root (or with sudo) for tc commands.
-# Run from the build/ directory:
-#   cd build && sudo ../scripts/run_network_benchmark.sh
-
 set -e
 
 BINARY="./network_benchmark"
@@ -27,9 +16,6 @@ apply_netem() {
     tc qdisc show dev "$IFACE"
 }
 
-# ---------------------------------------------------------------
-#  Scenario A: Baseline — no netem, loopback only
-# ---------------------------------------------------------------
 echo ""
 echo "========================================"
 echo "  Scenario A: Baseline (no netem)"
@@ -38,10 +24,6 @@ cleanup
 "$BINARY" baseline
 echo "[Done] Scenario A"
 
-# ---------------------------------------------------------------
-#  Scenario B: Moderate — 50ms RTT, 100Mbps bandwidth
-#  netem delay 25ms = 50ms RTT (delay is one-way)
-# ---------------------------------------------------------------
 echo ""
 echo "========================================"
 echo "  Scenario B: Moderate (50ms RTT, 100Mbps)"
@@ -52,9 +34,6 @@ apply_netem "delay 25ms, rate 100mbit" delay 25ms rate 100mbit
 cleanup
 echo "[Done] Scenario B"
 
-# ---------------------------------------------------------------
-#  Scenario C: Constrained — 200ms RTT, 10Mbps, 0.5% loss
-# ---------------------------------------------------------------
 echo ""
 echo "========================================"
 echo "  Scenario C: Constrained (200ms RTT, 10Mbps, 0.5% loss)"

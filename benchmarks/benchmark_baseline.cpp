@@ -1,16 +1,7 @@
-// benchmarks/baseline.cpp
-//
-// Baseline benchmark: static algorithm performance dataset.
-//
-// Measures compression ratio, throughput, and latency for
-// LZ4, ZSTD, and GZIP across four workload types and four
-// chunk sizes.  All measurements use real library calls.
-// Output is written to results/baseline.csv.
-// ============================================================
-
 #include "generators.h"
 #include "strategies.h"
 #include "heuristics.h"
+#include "resource_stats.h"
 #include "types.h"
 
 #include <iostream>
@@ -26,10 +17,6 @@
 
 using Clock = std::chrono::high_resolution_clock;
 
-// ============================================================
-//  One measurement: compress all chunks of a dataset and
-//  return aggregate stats.
-// ============================================================
 struct BaselineResult {
     std::string dataset;
     std::string algorithm;
@@ -38,6 +25,8 @@ struct BaselineResult {
     double      avgRatio;
     double      avgLatencyMs;
     double      throughputMBps;
+    double      avgCpuMs;
+    long        peakRssKb;
 };
 
 BaselineResult runBaseline(
@@ -50,25 +39,25 @@ BaselineResult runBaseline(
     size_t totalOriginal   = 0;
     size_t totalCompressed = 0;
     double totalLatencyMs  = 0;
-    int    chunks          = 0;
+    double totalCpuMs      = 0;
+    long peakRss           = 0;
+    int chunks             = 0;
 
     for (size_t offset = 0; offset < data.size(); offset += chunkSize) {
         size_t len = std::min(chunkSize, data.size() - offset);
         Chunk chunk(data.begin() + offset,
                     data.begin() + offset + len);
 
-        auto t0 = Clock::now();
-        Chunk compressed = compressFn(chunk);
-        auto t1 = Clock::now();
-
-        if (compressed.empty())
+        auto meas = measureCompression([&]() { return compressFn(chunk); });
+        if (meas.compressed.empty())
             throw std::runtime_error(
                 algoName + " compression failed on " + datasetName);
 
-        double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
         totalOriginal   += len;
-        totalCompressed += compressed.size();
-        totalLatencyMs  += ms;
+        totalCompressed += meas.compressed.size();
+        totalLatencyMs  += meas.wallMs;
+        totalCpuMs      += meas.cpuMs;
+        peakRss          = std::max(peakRss, meas.peakRssKb);
         ++chunks;
     }
 
@@ -76,22 +65,19 @@ BaselineResult runBaseline(
     double avgLatency  = totalLatencyMs / chunks;
     double throughput  = (totalOriginal / (1024.0 * 1024.0)) /
                          (totalLatencyMs / 1000.0);
+    double avgCpu      = totalCpuMs / chunks;
 
-    // Entropy is a property of the dataset, not the chunk size
     double entropy = computeEntropy(
         Chunk(data.begin(), data.begin() + std::min(data.size(), chunkSize)));
 
     return {
         datasetName, algoName, chunkSize,
-        entropy, avgRatio, avgLatency, throughput
+        entropy, avgRatio, avgLatency, throughput, avgCpu, peakRss
     };
 }
 
-// ============================================================
-//  Main 
-// ============================================================
 int main() {
-    const size_t DATA_SIZE = 1 << 20;   // 1 MB per dataset
+    const size_t DATA_SIZE = 1 << 20;
 
     std::vector<std::pair<std::string, Chunk>> datasets = {
         { "Telemetry", generateTelemetry(DATA_SIZE) },
@@ -102,7 +88,6 @@ int main() {
 
     std::vector<size_t> chunkSizes = { 1024, 4096, 16384, 65536 };
 
-    // algorithm name → compress function
     std::vector<std::pair<std::string, std::function<Chunk(const Chunk&)>>>
     algorithms = {
         { "LZ4",  compressLZ4  },
@@ -110,9 +95,6 @@ int main() {
         { "GZIP", compressGZIP }
     };
 
-    // --------------------------------------------------------
-    //  Run all combinations
-    // --------------------------------------------------------
     std::vector<BaselineResult> allResults;
 
     for (auto& [dsName, dsData] : datasets) {
@@ -134,22 +116,20 @@ int main() {
                           << std::setprecision(4) << r.avgRatio
                           << " | latency: "    << std::setw(8)
                           << std::setprecision(4) << r.avgLatencyMs << " ms"
-                          << " | throughput: " << std::setw(8)
-                          << std::setprecision(2) << r.throughputMBps
-                          << " MB/s\n";
+                          << " | CPU: "        << std::setw(8)
+                          << std::setprecision(4) << r.avgCpuMs << " ms"
+                          << " | RSS: "        << r.peakRssKb << " KB"
+                          << "\n";
             }
         }
     }
 
-    // --------------------------------------------------------
-    //  Write CSV
-    // --------------------------------------------------------
     std::ofstream csv("results/baseline.csv");
     if (!csv.is_open())
         throw std::runtime_error("Cannot open results/baseline.csv");
 
     csv << "dataset,algorithm,chunk_size,entropy,"
-           "avg_ratio,avg_latency_ms,throughput_mbps\n";
+           "avg_ratio,avg_latency_ms,throughput_mbps,avg_cpu_ms,peak_rss_kb\n";
 
     for (const auto& r : allResults) {
         csv << r.dataset      << ","
@@ -158,7 +138,9 @@ int main() {
             << r.entropy      << ","
             << r.avgRatio     << ","
             << r.avgLatencyMs << ","
-            << r.throughputMBps << "\n";
+            << r.throughputMBps << ","
+            << r.avgCpuMs     << ","
+            << r.peakRssKb    << "\n";
     }
 
     std::cout << "\nBaseline results saved to results/baseline.csv\n";

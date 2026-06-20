@@ -2,6 +2,7 @@
 #include "heuristics.h"
 #include "strategies.h"
 #include "engine.h"
+#include "resource_stats.h"
 #include "stats.h"
 #include "types.h"
 
@@ -11,6 +12,7 @@
 #include <vector>
 #include <string>
 #include <chrono>
+#include <numeric>
 
 static constexpr size_t CHUNK_SIZE  = 4096;
 static constexpr size_t DATA_SIZE   = 1 << 20;
@@ -36,26 +38,6 @@ struct WorkloadDef {
     Chunk       data;
 };
 
-// Returns mean latency in ms over N_TRIALS compress cycles for one chunk.
-static TrialStats benchmarkLatency(
-    const Chunk&          chunk,
-    const Decision&       forced,
-    const std::string&    label)
-{
-    std::vector<double> latencies;
-    latencies.reserve(N_TRIALS);
-
-    for (int t = 0; t < N_TRIALS; ++t) {
-        auto t0 = std::chrono::high_resolution_clock::now();
-        compressWithDecision(chunk, forced);
-        auto t1 = std::chrono::high_resolution_clock::now();
-        latencies.push_back(
-            std::chrono::duration<double, std::milli>(t1 - t0).count());
-    }
-
-    return computeStats(label, latencies);
-}
-
 int main() {
     std::vector<WorkloadDef> workloads = {
         { "Telemetry", generateTelemetry(DATA_SIZE) },
@@ -63,8 +45,7 @@ int main() {
     };
 
     std::ofstream csv("results/ablation.csv");
-    csv << "workload,variant,mean_ratio,mean_latency_ms,"
-           "ci95_lat_low,ci95_lat_high\n";
+    csv << "workload,variant,mean_ratio,mean_latency_ms,ci95_lat_low,ci95_lat_high,mean_cpu_ms,peak_rss_kb\n";
 
     std::cout << std::fixed << std::setprecision(4);
     std::cout << std::left  << std::setw(12) << "Workload"
@@ -72,44 +53,79 @@ int main() {
               << std::setw(10) << "Ratio"
               << std::setw(14) << "Latency(ms)"
               << std::setw(20) << "95% CI"
+              << std::setw(12) << "CPU(ms)"
+              << std::setw(10) << "RSS(KB)"
               << "\n";
-    std::cout << std::string(72, '-') << "\n";
+    std::cout << std::string(94, '-') << "\n";
 
     for (const auto& wl : workloads) {
-        // Use first chunk only — ratio is deterministic, latency is per-chunk.
         Chunk chunk(wl.data.begin(),
                     wl.data.begin() + std::min(CHUNK_SIZE, wl.data.size()));
 
         for (const auto& v : VARIANTS) {
-            // BitPack only valid when all values in [0,15].
-            // Telemetry values are not bounded; skip BitPack variants for it.
             if (v.prep == Preprocess::BITPACK && wl.name == "Telemetry")
                 continue;
-            // Delta on Nibble is valid as a comparison point; keep it.
 
             Decision forced;
             forced.preprocess = v.prep;
             forced.algorithm  = v.algo;
 
-            CompressResult r = compressWithDecision(chunk, forced);
+            bool bitpackEligible = true;
+            if (forced.preprocess == Preprocess::BITPACK) {
+                for (Byte b : chunk)
+                    if (b > 15) { bitpackEligible = false; break; }
+                if (!bitpackEligible)
+                    forced.preprocess = Preprocess::NONE;
+            }
 
-            std::string statsLabel =
-                wl.name + " | " + v.label + " | latency_ms";
-            TrialStats lat = benchmarkLatency(chunk, forced, statsLabel);
+            CompressResult compResult = compressWithDecision(chunk, forced);
+            double ratio = compResult.ratio;
+
+            std::vector<double> lats, cpus;
+            long peakRss = 0;
+            for (int t = 0; t < N_TRIALS; ++t) {
+                auto meas = measureCompression([&]() {
+                    Chunk processed = chunk;
+                    if (forced.preprocess == Preprocess::DELTA) {
+                        processed = deltaEncode(chunk);
+                    } else if (forced.preprocess == Preprocess::BITPACK) {
+                        processed = bitPackEncode(chunk);
+                    }
+
+                    switch (forced.algorithm) {
+                        case Algorithm::LZ4:  return compressLZ4(processed);
+                        case Algorithm::ZSTD: return compressZSTD(processed);
+                        case Algorithm::GZIP: return compressGZIP(processed);
+                    }
+                    return Chunk{};
+                });
+                lats.push_back(meas.wallMs);
+                cpus.push_back(meas.cpuMs);
+                peakRss = std::max(peakRss, meas.peakRssKb);
+            }
+
+            TrialStats lat = computeStats(
+                wl.name + " | " + v.label + " | latency_ms", lats);
+            double avgCpu = std::accumulate(cpus.begin(), cpus.end(), 0.0) / cpus.size();
 
             std::cout << std::left  << std::setw(12) << wl.name
                       << std::setw(16) << v.label
                       << std::right
-                      << std::setw(10) << r.ratio
+                      << std::setw(10) << ratio
                       << std::setw(14) << lat.mean
-                      << "  [" << lat.ci95Low << ", " << lat.ci95High << "]\n";
+                      << "  [" << lat.ci95Low << ", " << lat.ci95High << "]"
+                      << std::setw(12) << avgCpu
+                      << std::setw(10) << peakRss
+                      << "\n";
 
             csv << wl.name   << ","
                 << v.label   << ","
-                << r.ratio   << ","
+                << ratio     << ","
                 << lat.mean  << ","
                 << lat.ci95Low << ","
-                << lat.ci95High << "\n";
+                << lat.ci95High << ","
+                << avgCpu    << ","
+                << peakRss   << "\n";
         }
     }
 

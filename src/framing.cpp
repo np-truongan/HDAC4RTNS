@@ -7,13 +7,6 @@
 #include <cerrno>
 #include <stdexcept>
 
-// ============================================================
-//  Internal helpers: fully reliable read and write
-//
-//  TCP may return fewer bytes than requested on any single
-//  call. These wrappers loop until all bytes are transferred
-//  or an error/EOF occurs.
-// ============================================================
 static bool writeAll(int fd, const void* buf, size_t n) {
     const char* p = static_cast<const char*>(buf);
     size_t remaining = n;
@@ -40,9 +33,6 @@ static bool readAll(int fd, void* buf, size_t n) {
     return true;
 }
 
-// ============================================================
-//  sendFrame
-// ============================================================
 bool sendFrame(int fd, const FrameHeader& header, const Chunk& payload) {
     // Validate sizes match
     if (payload.size() != header.compressedSize)
@@ -59,19 +49,13 @@ bool sendFrame(int fd, const FrameHeader& header, const Chunk& payload) {
     return true;
 }
 
-// ============================================================
-//  recvFrame
-// ============================================================
 bool recvFrame(int fd, FrameHeader& header, Chunk& payload) {
-    // Read fixed-size header
     if (!readAll(fd, &header, sizeof(FrameHeader)))
         return false;
 
-    // Sanity check
     if (header.magic != 0xADC0DE42)
         return false;
 
-    // Read payload
     payload.resize(header.compressedSize);
     if (header.compressedSize > 0)
         if (!readAll(fd, payload.data(), header.compressedSize))
@@ -80,9 +64,6 @@ bool recvFrame(int fd, FrameHeader& header, Chunk& payload) {
     return true;
 }
 
-// ============================================================
-//  nowMicros
-// ============================================================
 uint64_t nowMicros() {
     using namespace std::chrono;
     return static_cast<uint64_t>(
