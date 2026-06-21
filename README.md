@@ -188,22 +188,22 @@ All tests must pass before any benchmark results are considered valid.
 
 ```bash
 ./benchmark_baseline           # LZ4, Zstd, Gzip at 4 KB
-./benchmark_chunksize          # Sweep 512 B → 64 KB
+./benchmark_chunksize          # Sweep 512 B → 1 MB
 ./benchmark_comparison         # 4‑system head‑to‑head at 4 KB
 ```
 
 ### 3. Adaptive Framework Analysis
 
 ```bash
-./benchmark_ablation              # All preprocessing‑algorithm combinations
-./benchmark_boundary              # Smooth/noisy transition behaviour
-./benchmark_sensitivity           # Threshold sweep (entropy + smoothness)
-./benchmark_heuristic_single      # Single‑workload heuristic evaluation
-./benchmark_pareto                # Ratio‑speed Pareto frontier
-./benchmark_pipeline_integration  # End‑to‑end pipeline ordering
-./benchmark_preprocessing         # Preprocessing gain quantification
-./benchmark_routing_validation    # Decision routing verification
-./benchmark_streaming_stability   # Per‑chunk latency stability
+./benchmark_ablation                  # All preprocessing‑algorithm combinations
+./benchmark_boundary                  # Smooth/noisy transition behaviour
+./benchmark_sensitivity               # Threshold sweep (entropy + smoothness)
+./benchmark_heuristic_single          # Single‑workload heuristic evaluation
+./benchmark_pareto                    # Ratio‑speed Pareto frontier
+./benchmark_pipeline_integration      # End‑to‑end pipeline ordering
+./benchmark_preprocessing_validation  # Preprocessing gain quantification
+./benchmark_routing_validation        # Decision routing verification
+./benchmark_streaming_stability       # Per‑chunk latency stability
 ```
 
 ### 4. Network Evaluation

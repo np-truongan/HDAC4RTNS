@@ -17,12 +17,16 @@ static constexpr size_t   DATA_SIZE   = 1UL << 20;
 
 int main() {
     std::cout << "========================================\n";
-    std::cout << "  Benchmark: Boundary Telemetry\n";
+    std::cout << "  Benchmark: Boundary Telemetry (Noise Robustness)\n";
     std::cout << "========================================\n\n";
 
     EngineConfig cfg{};
 
-    float noise_levels[] = {0.1f, 0.2f, 0.3f, 0.4f, 0.5f};
+    // Sweep noise from 0.0 to 0.9 in steps of 0.1
+    std::vector<float> noise_levels;
+    for (int i = 0; i <= 9; ++i) {
+        noise_levels.push_back(i / 10.0f);
+    }
 
     std::ofstream csv("results/boundary_results.csv");
     csv << "noise_scale,smoothness,entropy,"
@@ -39,6 +43,7 @@ int main() {
               << std::setw(10) << "Preprocess"
               << std::setw(14) << "ChosenRatio"
               << std::setw(14) << "AltRatio"
+              << std::setw(14) << "RatioDelta"
               << std::setw(14) << "LatChosen(µs)"
               << std::setw(14) << "LatAlt(µs)"
               << std::setw(12) << "CPU(ms)"
@@ -101,6 +106,7 @@ int main() {
 
         double chosenLatUs = chosenMeas.wallMs * 1000.0;
         double altLatUs    = altMeas.wallMs * 1000.0;
+        double delta = altRes.ratio - chosen.ratio;
 
         std::cout << std::setw(12) << noise
                   << std::setw(12) << f.smoothness
@@ -109,6 +115,7 @@ int main() {
                   << std::setw(10) << toString(d.preprocess)
                   << std::setw(14) << chosen.ratio
                   << std::setw(14) << altRes.ratio
+                  << std::setw(14) << delta
                   << std::setw(14) << chosenLatUs
                   << std::setw(14) << altLatUs
                   << std::setw(12) << chosenMeas.cpuMs
@@ -122,7 +129,7 @@ int main() {
             << toString(d.preprocess)  << ","
             << chosen.ratio     << ","
             << altRes.ratio     << ","
-            << (altRes.ratio - chosen.ratio) << ","
+            << delta << ","
             << chosenLatUs      << ","
             << altLatUs         << ","
             << chosenMeas.cpuMs << ","

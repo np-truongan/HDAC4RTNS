@@ -22,6 +22,7 @@ public:
     const std::vector<ChunkResult>& getResults() const;
     RunMetrics computeMetrics(const std::string& systemName) const;
     bool tryPopResult(ChunkResult& out);
+
 private:
     struct Impl;
     Impl* impl;
@@ -36,4 +37,3 @@ void printRunMetrics(const RunMetrics& m);
 void saveResultsCSV(
     const std::vector<ChunkResult>& results,
     const std::string& filepath);
-

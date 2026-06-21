@@ -6,3 +6,4 @@ results/
 *.a
 CMakeCache.txt
 CMakeFiles/
+data/

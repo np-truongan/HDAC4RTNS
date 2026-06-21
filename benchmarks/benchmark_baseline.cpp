@@ -3,6 +3,7 @@
 #include "heuristics.h"
 #include "resource_stats.h"
 #include "types.h"
+#include "data_loader.h"
 
 #include <iostream>
 #include <fstream>
@@ -77,14 +78,21 @@ BaselineResult runBaseline(
 }
 
 int main() {
-    const size_t DATA_SIZE = 1 << 20;
+    const size_t DATA_SIZE = 1 << 20;   // 1 MB per dataset
 
-    std::vector<std::pair<std::string, Chunk>> datasets = {
-        { "Telemetry", generateTelemetry(DATA_SIZE) },
-        { "JSON",      generateJSON(DATA_SIZE)      },
-        { "Binary",    generateBinary(DATA_SIZE)    },
-        { "Nibble",    generateNibble(DATA_SIZE)    }
-    };
+    std::vector<std::pair<std::string, Chunk>> datasets;
+
+    // ----- Synthetic workloads (control) -----
+    datasets.emplace_back("Telemetry", generateTelemetry(DATA_SIZE));
+    datasets.emplace_back("JSON",      generateJSON(DATA_SIZE));
+    datasets.emplace_back("Binary",    generateBinary(DATA_SIZE));
+    datasets.emplace_back("Nibble",    generateNibble(DATA_SIZE));
+
+    // ----- Real workloads (auto‑loaded from data/) -----
+    auto realDatasets = loadAllFilesFromDirectory("../data/", DATA_SIZE);
+    for (auto& [name, data] : realDatasets) {
+        datasets.emplace_back("Real_" + name, std::move(data));
+    }
 
     std::vector<size_t> chunkSizes = { 1024, 4096, 16384, 65536 };
 

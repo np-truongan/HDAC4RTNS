@@ -4,6 +4,7 @@
 #include "engine.h"
 #include "pipeline.h"
 #include "resource_stats.h"
+#include "data_loader.h"
 #include "types.h"
 
 #include <iostream>
@@ -161,19 +162,19 @@ void printTable(
 }
 
 void printAdaptiveSummary(
-    const std::map<std::string,
-    std::vector<WorkloadResult>>& byWorkload)
+    const std::map<std::string, std::vector<WorkloadResult>>& byWorkload,
+    const std::string&                                      label)
 {
-    std::cout << "\n--- Adaptive vs Best Static Baseline ---\n";
+    std::cout << "\n--- Adaptive vs Best Static Baseline [" << label << "] ---\n";
     std::cout << std::left
-              << std::setw(12) << "Workload"
+              << std::setw(16) << "Workload"
               << std::setw(14) << "Adaptive"
               << std::setw(14) << "Best Static"
-              << std::setw(12) << "Best System"
+              << std::setw(14) << "Best System"
               << std::setw(12) << "Ratio Gain"
               << std::setw(12) << "CPU Gain"
               << "\n";
-    std::cout << std::string(76, '-') << "\n";
+    std::cout << std::string(82, '-') << "\n";
 
     for (const auto& [workload, rows] : byWorkload) {
         const WorkloadResult* adaptive = nullptr;
@@ -196,11 +197,11 @@ void printAdaptiveSummary(
                          / bestStatic->avgCpuMs * 100.0;
 
         std::cout << std::left
-                  << std::setw(12) << workload
+                  << std::setw(16) << workload
                   << std::setw(14) << std::fixed << std::setprecision(4)
                   << adaptive->avgRatio
                   << std::setw(14) << bestStatic->avgRatio
-                  << std::setw(12) << bestStatic->system
+                  << std::setw(14) << bestStatic->system
                   << std::setw(12) << std::setprecision(1)
                   << (ratioGain >= 0 ? "+" : "") << static_cast<int>(ratioGain) << "%"
                   << std::setw(12)
@@ -209,49 +210,40 @@ void printAdaptiveSummary(
     }
 }
 
-int main() {
-    const size_t DATA_SIZE  = 1 << 20;
-    const size_t CHUNK_SIZE = 4096;
-
-    EngineConfig cfg;
-
-    std::cout << "========================================\n";
-    std::cout << "  Static vs Adaptive Comparison\n";
-    std::cout << "========================================\n";
-    std::cout << "Data size  : 1 MB per workload\n";
-    std::cout << "Chunk size : " << CHUNK_SIZE << " bytes\n";
-    std::cout << "Systems    : Static LZ4, Static ZSTD, Static Gzip, Adaptive\n";
-    std::cout << "Workloads  : Telemetry, JSON, Binary, Nibble\n";
-
-    std::vector<std::pair<std::string, Chunk>> datasets = {
-        { "Telemetry", generateTelemetry(DATA_SIZE) },
-        { "JSON",      generateJSON(DATA_SIZE)      },
-        { "Binary",    generateBinary(DATA_SIZE)    },
-        { "Nibble",    generateNibble(DATA_SIZE)    }
-    };
-
+std::map<std::string, std::vector<WorkloadResult>> runComparison(
+    const std::vector<std::pair<std::string, Chunk>>& datasets,
+    size_t                                             chunkSize,
+    const EngineConfig&                                cfg,
+    const std::string&                                 csvSuffix)
+{
     std::map<std::string, std::vector<WorkloadResult>> byWorkload;
     std::vector<WorkloadResult> allResults;
 
-    for (auto& [name, data] : datasets) {
+    for (const auto& [name, data] : datasets) {
         std::vector<WorkloadResult> rows;
 
-        rows.push_back(runStatic("LZ4",  name, data, CHUNK_SIZE, compressLZ4));
-        rows.push_back(runStatic("ZSTD", name, data, CHUNK_SIZE, compressZSTD));
-        rows.push_back(runStatic("Gzip", name, data, CHUNK_SIZE, compressGZIP));
-        rows.push_back(runAdaptive(name, data, CHUNK_SIZE, cfg));
+        rows.push_back(runStatic("LZ4",  name, data, chunkSize, compressLZ4));
+        rows.push_back(runStatic("ZSTD", name, data, chunkSize, compressZSTD));
+        rows.push_back(runStatic("Gzip", name, data, chunkSize, compressGZIP));
+        rows.push_back(runAdaptive(name, data, chunkSize, cfg));
 
         byWorkload[name] = rows;
         for (const auto& r : rows) allResults.push_back(r);
     }
 
-    std::cout << "\n--- Per-Workload Comparison ---\n";
+    std::cout << "\n--- Per-Workload Comparison [" << csvSuffix << "] ---\n";
     for (auto& [workload, rows] : byWorkload)
         printTable(workload, rows);
 
-    printAdaptiveSummary(byWorkload);
+    printAdaptiveSummary(byWorkload, csvSuffix);
 
-    std::ofstream csv("results/static_comparison.csv");
+    std::string csvFile = "results/static_comparison_" + csvSuffix + ".csv";
+    std::ofstream csv(csvFile);
+    if (!csv.is_open()) {
+        std::cerr << "Warning: Could not open " << csvFile << "\n";
+        return byWorkload;
+    }
+
     csv << "system,workload,avg_ratio,avg_latency_ms,"
            "throughput_mbps,jitter_ms,avg_cpu_ms,peak_rss_kb,total_original,total_compressed\n";
 
@@ -268,6 +260,64 @@ int main() {
             << r.totalCompressed << "\n";
     }
 
-    std::cout << "\nResults saved to results/static_comparison.csv\n";
+    std::cout << "\nResults saved to " << csvFile << "\n";
+    return byWorkload;
+}
+
+int main() {
+    const size_t DATA_SIZE  = 1 << 20;
+    const size_t CHUNK_SIZE = 4096;
+
+    EngineConfig cfg;
+
+    std::cout << "========================================\n";
+    std::cout << "  Static vs Adaptive Comparison\n";
+    std::cout << "  (Synthetic + Auto-loaded Real Data)\n";
+    std::cout << "========================================\n";
+    std::cout << "Synthetic data size : 1 MB per workload\n";
+    std::cout << "Real data size      : Original file sizes (no padding)\n";
+    std::cout << "Chunk size          : " << CHUNK_SIZE << " bytes\n";
+    std::cout << "Systems             : Static LZ4, Static ZSTD, Static Gzip, Adaptive\n\n";
+
+    std::cout << "========================================\n";
+    std::cout << "  RUN 1: SYNTHETIC WORKLOADS\n";
+    std::cout << "========================================\n";
+
+    std::vector<std::pair<std::string, Chunk>> syntheticDatasets = {
+        {"Synth_Telemetry", generateTelemetry(DATA_SIZE)},
+        {"Synth_JSON",      generateJSON(DATA_SIZE)},
+        {"Synth_Binary",    generateBinary(DATA_SIZE)},
+        {"Synth_Nibble",    generateNibble(DATA_SIZE)}
+    };
+
+    auto synthResults = runComparison(syntheticDatasets, CHUNK_SIZE, cfg, "synthetic");
+
+    std::cout << "\n========================================\n";
+    std::cout << "  RUN 2: REAL WORKLOADS (auto-loaded)\n";
+    std::cout << "========================================\n";
+    std::cout << "  Note: Real files are NOT padded. Each file retains its original size.\n";
+    std::cout << "  This preserves the true statistical properties of the traffic.\n\n";
+
+    // Load real files without padding (targetBytes = 0)
+    // Real files keep their original sizes.
+    auto realDatasets = loadAllFilesFromDirectory("../data/", 0);
+
+    std::map<std::string, std::vector<WorkloadResult>> realResults;
+    if (realDatasets.empty()) {
+        std::cerr << "No real datasets found in data/. Skipping RUN 2.\n";
+    } else {
+        realResults = runComparison(realDatasets, CHUNK_SIZE, cfg, "real");
+    }
+
+    std::cout << "\n========================================\n";
+    std::cout << "  RESULTS SUMMARY\n";
+    std::cout << "========================================\n";
+    std::cout << "  Synthetic results   : results/static_comparison_synthetic.csv\n";
+    std::cout << "  Real results        : results/static_comparison_real.csv\n";
+    std::cout << "\n  Note: Synthetic and real workloads are presented separately.\n";
+    std::cout << "  They are not directly comparable because real files are not\n";
+    std::cout << "  zero-padded to 1 MB, preserving their true entropy and ratios.\n";
+
+    std::cout << "\nAll runs completed.\n";
     return 0;
 }

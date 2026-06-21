@@ -19,6 +19,7 @@ add_library(adaptive_core STATIC
     src/engine.cpp
     src/pipeline.cpp
     src/framing.cpp
+    src/data_loader.cpp
 )
 
 target_include_directories(adaptive_core PUBLIC
@@ -59,9 +60,9 @@ add_executable(benchmark_pipeline_integration
     benchmarks/benchmark_pipeline_integration.cpp)
 target_link_libraries(benchmark_pipeline_integration PRIVATE adaptive_core)
 
-add_executable(benchmark_preprocessing
-    benchmarks/benchmark_preprocessing.cpp)
-target_link_libraries(benchmark_preprocessing PRIVATE adaptive_core)
+add_executable(benchmark_preprocessing_validation
+    benchmarks/benchmark_preprocessing_validation.cpp)
+target_link_libraries(benchmark_preprocessing_validation PRIVATE adaptive_core)
 
 add_executable(benchmark_streaming_stability
     benchmarks/benchmark_streaming_stability.cpp)
@@ -111,7 +112,7 @@ foreach(target
     benchmark_heuristic_single
     benchmark_routing_validation
     benchmark_pipeline_integration
-    benchmark_preprocessing
+    benchmark_preprocessing_validation
     benchmark_streaming_stability
     benchmark_comparison
     benchmark_sensitivity

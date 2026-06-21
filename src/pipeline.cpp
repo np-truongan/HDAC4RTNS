@@ -28,6 +28,28 @@ struct Pipeline::Impl {
 
     explicit Impl(EngineConfig c) : cfg(c) {}
 
+    void consumerLoop() {
+        while (true) {
+            std::unique_lock<std::mutex> lock(queueMutex);
+            cv.wait(lock, [this] {
+                return !queue.empty() || done;
+            });
+
+            if (queue.empty() && done) break;
+
+            StreamItem item = std::move(queue.front());
+            queue.pop();
+            lock.unlock();
+
+            ChunkResult cr = processChunk(item);
+
+            {
+                std::lock_guard<std::mutex> rlock(resultsMutex);
+                results.push_back(std::move(cr));
+            }
+        }
+    }
+
     ChunkResult processChunk(const StreamItem& item) {
         ChunkResult result;
         result.originalSize  = item.data.size();
@@ -79,35 +101,25 @@ struct Pipeline::Impl {
 
         return result;
     }
-
-    void consumerLoop() {
-        while (true) {
-            std::unique_lock<std::mutex> lock(queueMutex);
-            cv.wait(lock, [this] {
-                return !queue.empty() || done;
-            });
-
-            if (queue.empty() && done) break;
-
-            StreamItem item = std::move(queue.front());
-            queue.pop();
-            lock.unlock();
-
-            ChunkResult cr = processChunk(item);
-            {
-                std::lock_guard<std::mutex> rlock(resultsMutex);
-                results.push_back(std::move(cr));
-            }
-        }
-    }
 };
 
 Pipeline::Pipeline(EngineConfig cfg) : impl(new Impl(cfg)) {}
-Pipeline::~Pipeline() { delete impl; }
+
+Pipeline::~Pipeline() {
+    if (impl) {
+        {
+            std::lock_guard<std::mutex> lock(impl->queueMutex);
+            impl->done = true;
+        }
+        impl->cv.notify_all();
+        if (impl->consumerThread.joinable())
+            impl->consumerThread.join();
+        delete impl;
+    }
+}
 
 void Pipeline::start() {
-    impl->consumerThread =
-        std::thread(&Impl::consumerLoop, impl);
+    impl->consumerThread = std::thread(&Impl::consumerLoop, impl);
 }
 
 void Pipeline::push(StreamItem item) {
@@ -134,6 +146,14 @@ const std::vector<ChunkResult>& Pipeline::getResults() const {
 
 RunMetrics Pipeline::computeMetrics(const std::string& systemName) const {
     return aggregateResults(impl->results, systemName);
+}
+
+bool Pipeline::tryPopResult(ChunkResult& out) {
+    std::lock_guard<std::mutex> lock(impl->resultsMutex);
+    if (impl->results.empty()) return false;
+    out = std::move(impl->results.front());
+    impl->results.erase(impl->results.begin());
+    return true;
 }
 
 RunMetrics aggregateResults(
@@ -227,13 +247,4 @@ void saveResultsCSV(
           << r.cpuTimeMs              << ","
           << r.peakRssKb              << "\n";
     }
-}
-
-
-bool Pipeline::tryPopResult(ChunkResult& out) {
-    std::lock_guard<std::mutex> lock(impl->resultsMutex);
-    if (impl->results.empty()) return false;
-    out = std::move(impl->results.front());
-    impl->results.erase(impl->results.begin());
-    return true;
 }

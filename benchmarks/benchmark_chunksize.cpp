@@ -200,19 +200,22 @@ void printSweepTable(
 }
 
 int main() {
-    const size_t DATA_SIZE = 1 << 20;
+    // Increase DATA_SIZE to 30 MB to have 30 chunks at 1 MB size
+    const size_t DATA_SIZE = 30 * (1 << 20); // 30 MB
     const std::vector<size_t> chunkSizes = {
-        512, 1024, 2048, 4096, 8192, 16384, 32768, 65536
+        512, 1024, 2048, 4096, 8192, 16384, 32768, 65536,
+        131072, 262144, 524288, 1048576  // <-- UPSCALED TO 1 MB
     };
 
     EngineConfig cfg;
 
     std::cout << "========================================\n";
-    std::cout << "  Chunk Size Sweep Benchmark\n";
+    std::cout << "  Chunk Size Sweep Benchmark (Upscaled to 1MB)\n";
     std::cout << "========================================\n";
-    std::cout << "Data size  : " << DATA_SIZE / 1024
-              << " KB per workload\n";
-    std::cout << "Chunk sizes: 512B, 1KB, 2KB, 4KB, 8KB, 16KB, 32KB, 64KB\n";
+    std::cout << "Data size  : " << DATA_SIZE / (1024 * 1024)
+              << " MB per workload\n";
+    std::cout << "Chunk sizes: 512B, 1KB, 2KB, 4KB, 8KB, 16KB, 32KB, 64KB, "
+              << "128KB, 256KB, 512KB, 1MB\n";
     std::cout << "Systems    : LZ4, ZSTD, Gzip, Adaptive\n";
     std::cout << "Workloads  : Telemetry, JSON, Binary, Nibble\n";
 
